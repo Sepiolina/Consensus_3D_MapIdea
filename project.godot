@@ -1,0 +1,18 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+
+config/name="Consensus 3D Map Idea"
+config/description="Procedural Voronoi planet, climate and solar system proof of concept"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.3")
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+
+[rendering]
+
+anti_aliasing/quality/msaa_3d=2
