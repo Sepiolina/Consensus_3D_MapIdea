@@ -630,7 +630,7 @@
 				const field = (sw + 0.12) * 520;
 				if (field > 0) {
 					const step = 170 + 90 * (n3(x * 4.3 + 8.1, y * 4.3 + 1.4, z * 4.3 + 6.6) + 1);
-					const ramp = 0.1 + 0.035 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
+					const ramp = 0.07 + 0.04 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
 					h += levelHeight(field, step, ramp, 0.07) * mesa;
 					const f = field / step - Math.floor(field / step);
 					rim = smoothstep(0.15, 0.45, f) * (1 - smoothstep(0.5, 0.85, f)) * mesa;

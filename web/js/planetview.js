@@ -15,7 +15,7 @@
 
 	const R = 100.0;
 	const RELIEF_MAX = 5.0, RELIEF_H0 = 2500.0, SEA_FLOOR = 1.0; // keep in sync with COMMON
-	const LOD_SUB = [32, 16, 8];     // subdivisions of each fan triangle, per level of detail
+	const LOD_SUB = [48, 16, 8];     // subdivisions of each fan triangle, per level of detail
 	const LOD_RAD = [0.085, 0.2];    // angular distance from the focus where LOD 0 and LOD 1 end
 	const LOD_HYST = 0.02;           // extra distance before a cell is coarsened again
 	const VEG_LOD = 1;               // cells at this LOD or finer carry trees and rocks
@@ -226,7 +226,7 @@
 				if (e > 0) occ += e / Math.sqrt(1 + e * e);
 				if (!(k & 1)) curv += rise;
 			}
-			out.nrm[o * 4 + 3] = clamp(1 - occ / 6 * 1.35, 0.15, 1);
+			out.nrm[o * 4 + 3] = clamp(1 - occ / 6 * 1.1, 0.2, 1);
 			out.surf[o * 4 + 2] = clamp(curv / 3 / (AO_R[0] * R), -1, 1); // + concave, - convex
 			return c;
 		}
@@ -402,7 +402,7 @@
 				const depth = this._mat(S.vegVert, S.depthFrag, extra, { side: THREE.DoubleSide });
 				const mesh = new THREE.Mesh(geo, material);
 				mesh.frustumCulled = false; mesh.visible = false;
-				if (kind !== 5) mesh.layers.enable(1); // grass tufts cast no shadow
+				if (kind !== 5 && kind !== 4) mesh.layers.enable(1); // grass tufts and shrubs cast no shadow (cost)
 				this.cellsRoot.add(mesh);
 				return { name, geo, mesh, material, depth, cap: 0, buf: null };
 			});
@@ -474,7 +474,7 @@
 			};
 			const area = (fine ? 1 : 1) * 1.0;
 			// Trees.
-			const nTreeCand = Math.round(1100 * area);
+			const nTreeCand = Math.round(850 * area);
 			for (let k = 0; k < nTreeCand; k++) {
 				const p = interp(), d = p.d;
 				if (p.h < 25 || p.up < 0.86 || p.rivD < 1.35 || p.t < -5 || p.h > 3300) continue;
@@ -483,7 +483,7 @@
 				const riparian = p.rivD < 4.5 ? (1 - wet) * 0.3 : 0;
 				let dens = Math.pow(wet, 1.6) * smoothstep(-0.2, 0.3, clump) + riparian * smoothstep(-0.3, 0.2, clump) + 0.008;
 				dens *= 1 - 0.7 * p.mesa * smoothstep(0.95, 0.85, p.up);
-				if (!fine) dens *= 0.16;
+				if (!fine) dens *= 0.13;
 				if (rng.randf() > dens) continue;
 				let kind;
 				const tm = p.t;

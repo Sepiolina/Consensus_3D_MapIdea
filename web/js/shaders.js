@@ -87,7 +87,7 @@
 	// Palette (albedo). Warm, earthy and muted: golden grass and ochre earth in dry
 	// country, olive to deep green where it rains, red sandstone and grey rock.
 	const vec3 C_OCHRE = vec3(0.48, 0.28, 0.11);
-	const vec3 C_GOLDEN = vec3(0.54, 0.38, 0.10);
+	const vec3 C_GOLDEN = vec3(0.54, 0.37, 0.08);
 	const vec3 C_TUNDRA = vec3(0.37, 0.35, 0.27);
 	const vec3 C_GRASS = vec3(0.29, 0.31, 0.12);
 	const vec3 C_MEADOW = vec3(0.21, 0.27, 0.10);
@@ -164,7 +164,7 @@
 		float day = smoothstep(-0.1, 0.25, dot(normalize(wpos), sun_dir_world));
 		vec3 vd = normalize(wpos - cameraPosition);
 		float sunward = max(dot(vd, sun_dir_world), 0.0);
-		vec3 hc = mix(vec3(0.56, 0.63, 0.72), vec3(0.86, 0.72, 0.55), sunward * sunward * 0.75) * (0.04 + 0.96 * day);
+		vec3 hc = mix(vec3(0.50, 0.57, 0.66), vec3(0.80, 0.66, 0.50), sunward * sunward * 0.75) * (0.04 + 0.96 * day);
 		float f = (1.0 - exp(-max(dist - 10.0, 0.0) / 55.0)) * detail * 0.45;
 		return mix(col, hc, f);
 	}
@@ -214,7 +214,7 @@
 		float sun_up = dot(up, sun_dir_world);
 		float day = smoothstep(-0.12, 0.2, sun_up);
 		float low = 1.0 - smoothstep(0.05, 0.6, sun_up);
-		vec3 key = sun_color * mix(vec3(1.0, 0.92, 0.78), vec3(1.0, 0.70, 0.43), low) * 1.35;
+		vec3 key = sun_color * mix(vec3(1.0, 0.92, 0.78), vec3(1.0, 0.70, 0.43), low) * 1.28;
 		float ndl = max(dot(n, sun_dir_world), 0.0);
 		float hemi = dot(n, up) * 0.5 + 0.5;
 		vec3 amb = mix(vec3(0.26, 0.20, 0.13), vec3(0.30, 0.39, 0.55), hemi) * (0.06 + 0.94 * day) * 0.55;
@@ -310,9 +310,11 @@
 	varying vec4 v_surf;
 	varying vec4 v_color;
 	varying float v_rivl;
+	varying float v_skirt;
 	void main() {
 		v_dir = normalize(position);
 		v_data = adata;
+		v_skirt = acolor.a < -0.5 ? 1.0 : 0.0;
 		v_surf = asurf;
 		v_color = acolor;
 		v_rivl = ariver;
@@ -332,21 +334,26 @@
 	varying vec4 v_surf;
 	varying vec4 v_color;
 	varying float v_rivl;
+	varying float v_skirt;
 	void main() {
 		vec3 d = normalize(v_dir);
+		// Skirt fragments (any part of a skirt triangle) copy the edge's shading.
+		bool skirt = v_skirt > 0.0001;
 		float h = v_data.x;
 		float tmean = v_data.y;
 		float precip = v_data.w;
 		float tnow = temp_now(tmean, v_data.z, d);
 		float relief = clamp(detail * 1.5, 0.0, 1.0);
-		float px = length(fwidth(v_wpos));
+		float px_dir = length(fwidth(v_dir)) * PLANET_R;
+		float px_pos = length(fwidth(v_wpos));
+		float px = skirt ? px_dir : px_pos;
 		vec3 up = normalize(v_wpos);
 		vec3 dpx = dFdx(v_wpos);
 		vec3 dpy = dFdy(v_wpos);
 		// Smooth normal from the height function; the triangle's own normal only where
 		// it is much steeper (cliff walls spanning one or two rows of triangles).
 		vec3 sn = normalize(v_nrm.xyz);
-		vec3 fn = v_color.a < -0.001 ? sn : facet_normal(dpx, dpy, up);
+		vec3 fn = skirt ? sn : facet_normal(dpx, dpy, up);
 		float sslope = 1.0 - clamp(dot(sn, up), 0.0, 1.0);
 		float fslope = 1.0 - clamp(dot(fn, up), 0.0, 1.0);
 		float steep = max(sslope, fslope) * relief;        // 1 - cos(slope angle)
@@ -418,22 +425,21 @@
 		col = mix(col, land_albedo(h, tnow, tmean, precip, d, v_color.rgb, 2.0), 1.0 - relief);
 		// Sea bed darkens with depth; occluded hollows a touch darker; cloud shadows.
 		col *= mix(1.0, 0.5, smoothstep(0.0, 800.0, sea_level - h));
-		col *= mix(0.8, 1.0, ao);
+		col *= mix(0.88, 1.0, ao);
 		col *= 1.0 - 0.2 * cloud_cover(d) * relief;
 
 		// Bump the normal with the ground detail (screen-space gradient of a height).
-		float skirt = v_color.a < -0.001 ? 0.0 : 1.0;
-		float bump = skirt * (rocky * (strata * 0.7 + streak * 0.6) + (1.0 - rocky) * (clump * 0.5 + n_brush * 0.4) + n_fine * 0.5) * relief;
-		float useF = smoothstep(0.1, 0.32, fslope - sslope) * relief;
+		float bump = (skirt ? 0.0 : 1.0) * relief * (rocky * streak * 0.5 + (1.0 - rocky) * (clump * 0.35 + n_brush * 0.35));
+		float useF = smoothstep(0.18, 0.42, fslope - sslope) * relief;
 		vec3 n = normalize(mix(sn, fn, useF));
 		vec3 r1 = cross(dpy, n);
 		vec3 r2 = cross(n, dpx);
 		float det = dot(dpx, r1);
 		vec3 grad = sign(det) * (dFdx(bump) * r1 + dFdy(bump) * r2);
-		n = normalize(abs(det) * n - grad * 0.012);
+		n = normalize(abs(det) * n - grad * 0.008);
 		vec3 emi = h > sea_level ? night_lights(d, v_color.a) * (1.0 - relief * 0.7) : vec3(0.0);
 		// Skirts sit under the ground, so the shadow map would black them out.
-		float sh = v_color.a < -0.001 || dot(n, sun_dir_world) <= 0.0 ? 1.0 : shadow_factor(v_wpos, n);
+		float sh = skirt || dot(n, sun_dir_world) <= 0.0 ? 1.0 : shadow_factor(v_wpos, n);
 		vec3 c = lit_s(col, n, v_wpos, 0.95, 0.03, emi, ao, sh);
 		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), 1.0);
 	}`;
