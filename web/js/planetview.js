@@ -15,8 +15,8 @@
 
 	const R = 100.0;
 	const RELIEF_MAX = 5.0, RELIEF_H0 = 2500.0, SEA_FLOOR = 1.0; // keep in sync with COMMON
-	const LOD_SUB = [48, 16, 8];     // subdivisions of each fan triangle, per level of detail
-	const LOD_RAD = [0.085, 0.2];    // angular distance from the focus where LOD 0 and LOD 1 end
+	const LOD_SUB = [40, 16, 8];     // subdivisions of each fan triangle, per level of detail
+	const LOD_RAD = [0.11, 0.22];    // angular distance from the focus where LOD 0 and LOD 1 end
 	const LOD_HYST = 0.02;           // extra distance before a cell is coarsened again
 	const VEG_LOD = 1;               // cells at this LOD or finer carry trees and rocks
 	const AO_R = [0.0018, 0.0055];   // AO probe radii (rad); 0.01 rad = 1 world unit
@@ -357,7 +357,7 @@
 						pos.push(d[0] * R, d[1] * R, d[2] * R);
 						river.push(side, path.bed[k], hw, w.sT);
 						across.push(ac[0], ac[1], ac[2], w.sA);
-						flow.push(along, hw + 0.45 + hw * 0.6);
+						flow.push(along, hw + 0.8 * (0.18 + 0.6 * hw)); // ends inside the levelled banks (see _carveRivers)
 					}
 					if (k < n - 1) { const q = base + k * 2; idx.push(q, q + 1, q + 2, q + 1, q + 3, q + 2); }
 				}
@@ -381,18 +381,19 @@
 			const THREE = window.THREE;
 			const G = POC.vegGeometry;
 			this.vegCells = new Map(); this.vegDirty = false; this._vegTime = 0;
+			// [name, geometry, leaf colour, wood colour, kind id, global instance cap]
 			const kinds = [
-				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0],
-				["broad1", G.broadleaf(23), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0],
-				["conifer", G.conifer(5), [0.08, 0.14, 0.08], [0.20, 0.14, 0.10], 1],
-				["acacia", G.acacia(7), [0.26, 0.27, 0.11], [0.26, 0.19, 0.12], 2],
-				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3],
-				["shrub", G.shrub(9), [0.20, 0.22, 0.09], [0.22, 0.16, 0.10], 4],
-				["tuft", G.tuft(4), [0.40, 0.36, 0.15], [0.40, 0.34, 0.16], 5],
-				["rock0", G.rock(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6],
-				["rock1", G.rock(29, 0), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6],
+				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 5000],
+				["broad1", G.broadleaf(23), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 5000],
+				["conifer", G.conifer(5), [0.08, 0.14, 0.08], [0.20, 0.14, 0.10], 1, 6000],
+				["acacia", G.acacia(7), [0.26, 0.27, 0.11], [0.26, 0.19, 0.12], 2, 5000],
+				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3, 3000],
+				["shrub", G.shrub(9), [0.20, 0.22, 0.09], [0.22, 0.16, 0.10], 4, 7000],
+				["tuft", G.tuft(4), [0.40, 0.36, 0.15], [0.40, 0.34, 0.16], 5, 20000],
+				["rock0", G.rock(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 2500],
+				["rock1", G.rock(29, 0), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 4000],
 			];
-			this.vegKinds = kinds.map(([name, base, leaf, wood, kind]) => {
+			this.vegKinds = kinds.map(([name, base, leaf, wood, kind, limit]) => {
 				const geo = new THREE.InstancedBufferGeometry();
 				for (const a of ["position", "normal", "aveg"]) geo.setAttribute(a, base.getAttribute(a));
 				geo.setIndex(base.getIndex());
@@ -404,7 +405,7 @@
 				mesh.frustumCulled = false; mesh.visible = false;
 				if (kind !== 5 && kind !== 4) mesh.layers.enable(1); // grass tufts and shrubs cast no shadow (cost)
 				this.cellsRoot.add(mesh);
-				return { name, geo, mesh, material, depth, cap: 0, buf: null };
+				return { name, geo, mesh, material, depth, cap: 0, buf: null, limit };
 			});
 			this.kindIndex = Object.fromEntries(this.vegKinds.map((k, i) => [k.name, i]));
 		}
@@ -413,8 +414,12 @@
 			const THREE = window.THREE;
 			this.vegDirty = false; this._vegTime = now;
 			this.vegKinds.forEach((k, ki) => {
+				// Over the kind's limit (dense forest), every cell is thinned evenly; the
+				// woodland colour of the ground keeps forests reading as forests.
 				let total = 0;
-				for (const v of this.vegCells.values()) total += v[ki].length;
+				for (const v of this.vegCells.values()) total += v[ki].length / 12;
+				const keep = Math.min(1, k.limit / Math.max(total, 1));
+				if (keep < 1) { total = 0; for (const v of this.vegCells.values()) total += Math.floor((v[ki].length / 12) * keep); }
 				if (total > k.cap) {
 					k.cap = Math.max(1024, 1 << Math.ceil(Math.log2(total * 1.25)));
 					k.buf = new THREE.InstancedInterleavedBuffer(new Float32Array(k.cap * 12), 12, 1);
@@ -425,7 +430,10 @@
 				}
 				if (k.buf) {
 					let o = 0;
-					for (const v of this.vegCells.values()) { const a = v[ki]; for (let i = 0; i < a.length; i++) k.buf.array[o++] = a[i]; }
+					for (const v of this.vegCells.values()) {
+						const a = v[ki], n = Math.floor((a.length / 12) * keep);
+						for (let j = 0; j < n; j++) { const src = Math.floor(j / keep) * 12; for (let i = 0; i < 12; i++) k.buf.array[o++] = a[src + i]; }
+					}
 					k.buf.needsUpdate = true;
 				}
 				k.geo.instanceCount = total;
@@ -474,21 +482,21 @@
 			};
 			const area = (fine ? 1 : 1) * 1.0;
 			// Trees.
-			const nTreeCand = Math.round(850 * area);
+			const nTreeCand = Math.round(1300 * area);
 			for (let k = 0; k < nTreeCand; k++) {
 				const p = interp(), d = p.d;
 				if (p.h < 25 || p.up < 0.86 || p.rivD < 1.35 || p.t < -5 || p.h > 3300) continue;
 				const wet = smoothstep(220, 1500, p.p);
 				const clump = n3(d[0] * 55 + 3.1, d[1] * 55 + 7.7, d[2] * 55 + 1.3) + 0.5 * n3(d[0] * 150 + 9.2, d[1] * 150 + 2.4, d[2] * 150 + 6.6);
 				const riparian = p.rivD < 4.5 ? (1 - wet) * 0.3 : 0;
-				let dens = Math.pow(wet, 1.6) * smoothstep(-0.2, 0.3, clump) + riparian * smoothstep(-0.3, 0.2, clump) + 0.008;
+				let dens = 1.5 * Math.pow(wet, 1.6) * smoothstep(-0.25, 0.25, clump) + riparian * smoothstep(-0.3, 0.2, clump) + 0.008;
 				dens *= 1 - 0.7 * p.mesa * smoothstep(0.95, 0.85, p.up);
-				if (!fine) dens *= 0.13;
+				if (!fine) dens *= 0.25;
 				if (rng.randf() > dens) continue;
 				let kind;
 				const tm = p.t;
 				if (tm < 5 || (tm < 9 && rng.randf() < 0.5) || (p.h > 1600 && rng.randf() < 0.6)) kind = K.conifer;
-				else if (tm > 21 && p.p > 1300 && p.h < 300 && rng.randf() < 0.45) kind = K.palm;
+				else if (tm > 21 && p.p > 1300 && p.h < 300 && rng.randf() < 0.22) kind = K.palm;
 				else if (tm > 16 && p.p < 1100 && rng.randf() < 0.75) kind = K.acacia;
 				else kind = rng.randf() < 0.5 ? K.broad0 : K.broad1;
 				push(kind, p, 0.7 + 0.65 * rng.randf(), (rng.randf() - 0.5) * 0.16, wet);
@@ -509,7 +517,7 @@
 			}
 			if (fine) {
 				// Shrubs: everywhere vegetated, clustered, denser by water.
-				for (let k = 0; k < 520; k++) {
+				for (let k = 0; k < 900; k++) {
 					const p = interp(), d = p.d;
 					if (p.h < 18 || p.up < 0.8 || p.rivD < 1.3 || p.t < -8) continue;
 					const wet = smoothstep(150, 1300, p.p);
@@ -519,7 +527,7 @@
 					push(K.shrub, p, 0.6 + 0.9 * rng.randf(), (rng.randf() - 0.5) * 0.2, wet);
 				}
 				// Grass tufts: dry grassland and steppe.
-				for (let k = 0; k < 1300; k++) {
+				for (let k = 0; k < 2600; k++) {
 					const p = interp(), d = p.d;
 					if (p.h < 22 || p.up < 0.85 || p.rivD < 2.2 || p.t < -6) continue;
 					const wet = smoothstep(150, 1300, p.p);

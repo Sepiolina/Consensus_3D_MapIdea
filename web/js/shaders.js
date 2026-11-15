@@ -90,13 +90,13 @@
 	const vec3 C_GOLDEN = vec3(0.54, 0.37, 0.08);
 	const vec3 C_TUNDRA = vec3(0.37, 0.35, 0.27);
 	const vec3 C_GRASS = vec3(0.29, 0.31, 0.12);
-	const vec3 C_MEADOW = vec3(0.21, 0.27, 0.10);
+	const vec3 C_MEADOW = vec3(0.20, 0.25, 0.10);
 	const vec3 C_FOREST = vec3(0.13, 0.21, 0.08);
 	const vec3 C_TAIGA = vec3(0.13, 0.19, 0.12);
 	const vec3 C_SAND = vec3(0.62, 0.49, 0.28);
 	const vec3 C_RED_DARK = vec3(0.40, 0.19, 0.11);
-	const vec3 C_RED = vec3(0.56, 0.29, 0.16);
-	const vec3 C_RED_LIGHT = vec3(0.68, 0.45, 0.28);
+	const vec3 C_RED = vec3(0.62, 0.33, 0.18);
+	const vec3 C_RED_LIGHT = vec3(0.76, 0.52, 0.33);
 	const vec3 C_GREY = vec3(0.44, 0.43, 0.41);
 	const vec3 C_SNOW = vec3(0.92, 0.95, 1.0);
 
@@ -214,10 +214,10 @@
 		float sun_up = dot(up, sun_dir_world);
 		float day = smoothstep(-0.12, 0.2, sun_up);
 		float low = 1.0 - smoothstep(0.05, 0.6, sun_up);
-		vec3 key = sun_color * mix(vec3(1.0, 0.92, 0.78), vec3(1.0, 0.70, 0.43), low) * 1.28;
+		vec3 key = sun_color * mix(vec3(1.0, 0.92, 0.78), vec3(1.0, 0.70, 0.43), low) * 1.36;
 		float ndl = max(dot(n, sun_dir_world), 0.0);
 		float hemi = dot(n, up) * 0.5 + 0.5;
-		vec3 amb = mix(vec3(0.26, 0.20, 0.13), vec3(0.30, 0.39, 0.55), hemi) * (0.06 + 0.94 * day) * 0.55;
+		vec3 amb = mix(vec3(0.26, 0.20, 0.13), vec3(0.30, 0.39, 0.55), hemi) * (0.06 + 0.94 * day) * 0.46;
 		vec3 v = normalize(cameraPosition - wpos);
 		vec3 hv = normalize(v + sun_dir_world);
 		float sp = pow(max(dot(n, hv), 0.0), mix(180.0, 6.0, rough)) * spec * step(0.0, dot(n, sun_dir_world)) * day * sh;
@@ -379,7 +379,7 @@
 		vec3 growth = mix(col * vec3(0.78, 0.86, 0.70), C_FOREST * 1.1, wet * 0.45);
 		col = mix(col, growth, clump * (0.4 + 0.4 * wet) * relief * (1.0 - snow));
 		col = mix(col, col * vec3(1.12, 1.05, 0.92), smoothstep(0.55, 0.3, n_mid) * (1.0 - wet) * 0.6 * relief);
-		col *= 1.0 + (n_brush - 0.5) * 0.3 * relief;
+		col *= 1.0 + ((n_brush - 0.5) * 0.42 + n_fine * 0.18) * relief;
 
 		// Dry washes: sand and gravel in gully floors.
 		float wash = smoothstep(0.5, 0.85, gully + (n_mid - 0.5) * 0.3) * smoothstep(-0.05, 0.25, curv) * (1.0 - 0.6 * wet);
@@ -387,7 +387,7 @@
 
 		// River banks: a sandy strip and damp sand at the waterline.
 		float rivl = v_rivl + flood * 45.0;
-		float bank = (1.0 - smoothstep(1.7, 3.4, rivd + (n_mid - 0.5) * 1.2)) * relief;
+		float bank = (1.0 - smoothstep(1.3, 2.6, rivd + (n_mid - 0.5) * 1.0)) * relief;
 		col = mix(col, C_SAND * (0.92 + 0.2 * n_brush), bank * 0.9);
 		float damp = (1.0 - smoothstep(rivl + 2.0, rivl + 14.0, h)) * step(rivd, 6.0) * relief;
 		col *= 1.0 - 0.3 * damp;
@@ -413,17 +413,19 @@
 		vec3 grey = mix(mix(v_color.rgb, C_GREY, 0.45), C_GREY * 1.12, strata * 0.6) * (0.85 + 0.25 * tone);
 		vec3 rockc = mix(grey, red, clamp(warm_dry * 0.85 + mesa * 0.35, 0.0, 1.0) * (1.0 - smoothstep(1800.0, 3000.0, h) * 0.7));
 		float streak = fbm_aa(vec3(d * 700.0), px * 700.0 / PLANET_R);
-		rockc *= 0.78 + 0.36 * streak;
+		rockc *= 0.84 + 0.28 * streak;
 		rockc *= 1.0 + clamp(-curv, 0.0, 1.0) * 0.25;                // sunlit caprock lips
 		col = mix(col, rockc, rocky);
 		// Scree and talus at cliff feet (concave, occluded, moderately steep).
 		float scree = (1.0 - smoothstep(0.55, 0.85, v_nrm.w)) * smoothstep(0.03, 0.14, steep) * (1.0 - rocky) * relief;
-		col = mix(col, mix(rockc, vec3(0.50, 0.42, 0.33), 0.5) * (0.85 + 0.3 * n_brush), scree * (0.35 + 0.45 * mesa));
+		col = mix(col, mix(rockc, vec3(0.56, 0.46, 0.34), 0.6) * (0.9 + 0.3 * n_brush), scree * (0.25 + 0.3 * mesa));
 
 		// Snow on top of everything but sheer walls.
 		col = mix(col, C_SNOW * (0.94 + 0.08 * n_brush), snow * (1.0 - rocky * 0.55) * relief);
 		col = mix(col, land_albedo(h, tnow, tmean, precip, d, v_color.rgb, 2.0), 1.0 - relief);
-		// Sea bed darkens with depth; occluded hollows a touch darker; cloud shadows.
+		// Drowned ground turns to wet sea bed, darkening with depth; occluded hollows a
+		// touch darker; cloud shadows.
+		col = mix(col, vec3(0.42, 0.40, 0.30), smoothstep(0.0, 30.0, sea_level - h) * 0.7);
 		col *= mix(1.0, 0.5, smoothstep(0.0, 800.0, sea_level - h));
 		col *= mix(0.88, 1.0, ao);
 		col *= 1.0 - 0.2 * cloud_cover(d) * relief;
@@ -436,7 +438,7 @@
 		vec3 r2 = cross(n, dpx);
 		float det = dot(dpx, r1);
 		vec3 grad = sign(det) * (dFdx(bump) * r1 + dFdy(bump) * r2);
-		n = normalize(abs(det) * n - grad * 0.008);
+		n = normalize(abs(det) * n - grad * 0.013);
 		vec3 emi = h > sea_level ? night_lights(d, v_color.a) * (1.0 - relief * 0.7) : vec3(0.0);
 		// Skirts sit under the ground, so the shadow map would black them out.
 		float sh = skirt || dot(n, sun_dir_world) <= 0.0 ? 1.0 : shadow_factor(v_wpos, n);
@@ -490,7 +492,7 @@
 		// Ripple the normal a little so the sun glints.
 		vec3 rn = normalize(n + (vec3(vnoise(d * 700.0 + wall_time * 0.5), vnoise(d * 700.0 + 9.0 - wall_time * 0.4), vnoise(d * 700.0 + 4.0)) - 0.5) * 0.12);
 		vec3 c = lit(col, rn, v_wpos, mix(0.15, 0.8, ice), 0.7, vec3(0.0), 1.0);
-		float alpha = clamp(mix(0.45, 0.97, 1.0 - exp(-depth / 260.0)) + foam * 0.3 + fres * 0.25, 0.0, 1.0);
+		float alpha = clamp(mix(0.62, 0.97, 1.0 - exp(-depth / 200.0)) + foam * 0.3 + fres * 0.25, 0.0, 1.0);
 		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), alpha);
 	}`;
 
@@ -521,7 +523,7 @@
 		vec4 w0 = modelMatrix * vec4(d * PLANET_R, 1.0);
 		float dist = distance(cameraPosition, w0.xyz);
 		float far = smoothstep(16.0, 30.0, dist);
-		float half_w = mix(aflow.y, ariver.z * (1.0 + v_flood), smoothstep(9.0, 15.0, dist));
+		float half_w = mix(aflow.y + v_flood * 0.15, ariver.z * (1.0 + v_flood), smoothstep(9.0, 15.0, dist));
 		v_side = ariver.x * half_w / ariver.z;
 		d = normalize(d * PLANET_R + across * ariver.x * half_w);
 		v_dir = d;
@@ -541,7 +543,7 @@
 		if (v_level < sea_level - 2.0) discard;
 		float s = abs(v_side);                  // 0 centre, 1 channel edge, >1 over the banks
 		float depthk = 1.0 - smoothstep(0.0, 1.15, s);
-		vec3 col = mix(vec3(0.17, 0.50, 0.46), vec3(0.05, 0.28, 0.31), depthk);
+		vec3 col = mix(vec3(0.20, 0.45, 0.42), vec3(0.06, 0.27, 0.30), depthk);
 		col = mix(col, vec3(0.40, 0.34, 0.22), clamp(v_flood, 0.0, 1.0) * 0.55);
 		// Flow: noise advected downstream.
 		vec3 q = v_dir * PLANET_R * 7.0 - v_flowdir * wall_time * 1.6;
