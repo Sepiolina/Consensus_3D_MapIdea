@@ -61,7 +61,7 @@
 		}
 		// Open tapered tube (trunk) from y0 to y1, optionally bent toward +x.
 		tube(y0, y1, r0, r1, seg, bend, part) {
-			const base = this.p.length / 3, rings = 3;
+			const base = this.p.length / 3, rings = Math.abs(bend) > 0.02 ? 3 : 1;
 			for (let k = 0; k <= rings; k++) {
 				const t = k / rings, y = y0 + (y1 - y0) * t, r = r0 + (r1 - r0) * t, ox = bend * t * t;
 				for (let s = 0; s < seg; s++) {
@@ -116,13 +116,13 @@
 
 	// Rounded broadleaf: a trunk and a crown of 4-5 merged, jittered blobs.
 	G.broadleaf = (seed) => {
-		const b = new Builder(seed), h = 0.12;
-		b.tube(-0.05, h + 0.03, 0.012, 0.007, 5, b.r(-0.01, 0.01), 0);
-		const crown = [0, h + 0.07, 0], n = 5;
-		b.blob([0, h + 0.08, 0], [0.085, 0.07, 0.085], 0, 0.22, 1, crown, 0.55);
+		const b = new Builder(seed), h = 0.05;
+		b.tube(-0.05, h + 0.05, 0.011, 0.007, 5, b.r(-0.01, 0.01), 0);
+		const crown = [0, h + 0.07, 0], n = 4;
+		b.blob([0, h + 0.075, 0], [0.075, 0.065, 0.075], 0, 0.22, 1, crown, 0.55);
 		for (let k = 0; k < n - 1; k++) {
-			const a = (k / (n - 1)) * Math.PI * 2 + b.r(-0.4, 0.4), d = b.r(0.045, 0.07);
-			b.blob([Math.cos(a) * d, h + b.r(0.03, 0.11), Math.sin(a) * d], [b.r(0.045, 0.06), b.r(0.04, 0.055), b.r(0.045, 0.06)], 0, 0.3, 1, crown, 0.6);
+			const a = (k / (n - 1)) * Math.PI * 2 + b.r(-0.4, 0.4), d = b.r(0.045, 0.075);
+			b.blob([Math.cos(a) * d, h + b.r(0.025, 0.1), Math.sin(a) * d], [b.r(0.04, 0.058), b.r(0.035, 0.05), b.r(0.04, 0.058)], 0, 0.3, 1, crown, 0.6);
 		}
 		b.shadeFoliage(crown[1], 0.12);
 		return b.build();
@@ -171,7 +171,6 @@
 		const b = new Builder(seed), crown = [0, 0.025, 0];
 		b.blob([0, 0.028, 0], [0.042, 0.032, 0.04], 0, 0.3, 1, crown, 0.5);
 		b.blob([0.03, 0.018, 0.012], [0.03, 0.024, 0.028], 0, 0.3, 1, crown, 0.5);
-		b.blob([-0.022, 0.016, -0.02], [0.028, 0.022, 0.03], 0, 0.3, 1, crown, 0.5);
 		b.shadeFoliage(crown[1], 0.05);
 		return b.build();
 	};
@@ -180,7 +179,7 @@
 		const b = new Builder(seed), n = 7;
 		for (let k = 0; k < n; k++) {
 			const a = (k / n) * Math.PI * 2 + b.r(-0.3, 0.3), dx = Math.cos(a), dz = Math.sin(a), px = -dz, pz = dx;
-			const r0 = 0.006, w = 0.004, L = b.r(0.03, 0.05), out = b.r(0.012, 0.025);
+			const r0 = 0.006, w = 0.0065, L = b.r(0.022, 0.04), out = b.r(0.01, 0.02);
 			const nn = [dx * 0.5, 1, dz * 0.5];
 			const b0 = b.vert([dx * r0 + px * w, -0.005, dz * r0 + pz * w], nn, 3, 0.35), b1 = b.vert([dx * r0 - px * w, -0.005, dz * r0 - pz * w], nn, 3, 0.35);
 			const tip = b.vert([dx * (r0 + out), L, dz * (r0 + out)], nn, 3, 1);
@@ -189,8 +188,8 @@
 		return b.build();
 	};
 	// Boulder: lumpy icosphere, flattened underneath.
-	G.rock = (seed) => {
-		const b = new Builder(seed), g = ico(1), base = 0;
+	G.rock = (seed, detail) => {
+		const b = new Builder(seed), g = ico(detail === undefined ? 1 : detail), base = 0;
 		const waves = [0, 1, 2].map(() => [nrm([b.r(-1, 1), b.r(-1, 1), b.r(-1, 1)]), b.r(2, 4), b.r(0, 6.28)]);
 		const flat = b.r(0.55, 0.8);
 		for (const v of g.v) {

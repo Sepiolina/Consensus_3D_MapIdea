@@ -78,7 +78,7 @@
 	// ---- continuous surface (see surface()): tuning shared with planetview.js
 	const KERNEL_R = 0.09;            // radius (rad) of the smooth kernel that blends cell values
 	const KERNEL_INV = 1 / (1 - Math.cos(KERNEL_R));
-	const SEA_K = 0.06;               // ocean depths are compressed by this before blending, so coasts stay put
+	const SEA_K = 0.15;               // ocean depths are compressed by this before blending, so coasts stay put
 	const WARP = 0.011;               // domain warp of the kernel lookup (rad): breaks up the Voronoi pattern
 	const RIVER_REACH = 1.6;          // world units (1 = PLANET_R / 100) beyond which a river does not carve
 
@@ -404,9 +404,17 @@
 			for (let c = 0; c < n; c++) if (this.hasRiver[c] && this.hasRiver[downhill[c]]) this.riverUp[downhill[c]].push(c);
 		}
 
+		// Quadratic Bezier on the sphere, then meandered: every point is pushed sideways by
+		// a smooth noise field of position alone, so pieces still meet at cell borders.
 		_bezier(a, b, c, steps) {
-			const out = [];
-			for (let k = 0; k <= steps; k++) { const t = k / steps; out.push(norm(lerp3(lerp3(a, b, t), lerp3(b, c, t), t))); }
+			const out = [], n3 = this.sn, A = 0.0055;
+			for (let k = 0; k <= steps; k++) {
+				const t = k / steps, p = norm(lerp3(lerp3(a, b, t), lerp3(b, c, t), t));
+				const e1 = norm(cross(p, Math.abs(p[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), e2 = cross(p, e1);
+				const u = n3(p[0] * 40 + 3.3, p[1] * 40 + 7.1, p[2] * 40 + 1.9) + 0.4 * n3(p[0] * 110 + 5.2, p[1] * 110 + 2.8, p[2] * 110 + 9.4);
+				const v = n3(p[0] * 40 + 8.6, p[1] * 40 + 4.2, p[2] * 40 + 6.5) + 0.4 * n3(p[0] * 110 + 1.4, p[1] * 110 + 6.9, p[2] * 110 + 3.3);
+				out.push(norm([p[0] + (e1[0] * u + e2[0] * v) * A, p[1] + (e1[1] * u + e2[1] * v) * A, p[2] + (e1[2] * u + e2[2] * v) * A]));
+			}
 			return out;
 		}
 		// River polylines inside cell c: [{pts, w0, w1}]. Curves cross cell borders on the
@@ -424,8 +432,8 @@
 				for (let k = 0; k <= n; k++) { const t = k / n; a.push(headwater ? b0 + (b1 - b0) * t : t < 0.5 ? b0 + (bm - b0) * t * 2 : bm + (b1 - bm) * (t * 2 - 1)); }
 				return a;
 			};
-			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 8), w0: w1 * 0.5, w1, bed: beds(8, bc, bc, bOut, true) }); }
-			else for (const j of ups) out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 14), w0: riverWidth(this.flux[j]), w1, bed: beds(14, bed ? (bed[j] + bc) * 0.5 : 0, bc, bOut, false) });
+			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 12), w0: w1 * 0.5, w1, bed: beds(12, bc, bc, bOut, true) }); }
+			else for (const j of ups) out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 24), w0: riverWidth(this.flux[j]), w1, bed: beds(24, bed ? (bed[j] + bc) * 0.5 : 0, bc, bOut, false) });
 			return out;
 		}
 
@@ -592,41 +600,53 @@
 			const land = smoothstep(-160, 40, H0);
 			let h = H0;
 			// 2. Broad swells and rolling hills.
-			const mesaN = n3(x * 9.7 + 2.9, y * 9.7 + 7.1, z * 9.7 + 4.6);
-			const mesa = clamp(ms * 1.6, 0, 1) * smoothstep(-0.12, 0.22, mesaN) * land;
-			const hillA = (rg * (0.85 + 1.2 * mesa)) * (0.25 + 0.75 * land);
+			// Tableland provinces: the blended rock/climate propensity, broken up by noise.
+			const prov = 0.6 * n3(x * 4.1 + 2.9, y * 4.1 + 7.1, z * 4.1 + 4.6) + 0.4 * n3(x * 9.7 + 6.3, y * 9.7 + 0.8, z * 9.7 + 3.4);
+			const mesa = smoothstep(0.38, 0.68, ms + prov * 0.5) * land;
+			const hillA = Math.max(rg, 80) * (1 - 0.5 * mesa) * (0.25 + 0.75 * land);
 			let hill = 0.55 * n3(x * 13 + 0.3, y * 13 + 5.1, z * 13 + 2.2);
-			hill += 0.5 * n3(x * 41 + 3.3, y * 41 + 1.9, z * 41 + 8.4) + 0.25 * n3(x * 87 + 6.1, y * 87 + 2.6, z * 87 + 0.9);
-			if (q !== 0) hill += 0.12 * n3(x * 181 + 9.4, y * 181 + 3.9, z * 181 + 7.2);
+			hill += 0.3 * n3(x * 33 + 3.3, y * 33 + 1.9, z * 33 + 8.4) + 0.12 * n3(x * 87 + 6.1, y * 87 + 2.6, z * 87 + 0.9);
+			if (q !== 0) hill += 0.05 * n3(x * 181 + 9.4, y * 181 + 3.9, z * 181 + 7.2);
 			h += hillA * hill;
 			// 3. Ridged noise in mountain belts.
 			const mtn = smoothstep(240, 650, rg) * land;
 			if (mtn > 0) {
-				let rsum = 0, amp = 1, f = 34, norm_ = 0;
+				let rsum = 0, amp = 1, f = 42, norm_ = 0;
 				const oct = q === 0 ? 3 : 5;
 				for (let o = 0; o < oct; o++) {
 					const v = 1 - Math.abs(n3(x * f + o * 7.7, y * f + o * 3.1, z * f + o * 5.3));
 					rsum += amp * v * v; norm_ += amp; amp *= 0.5; f *= 2.1;
 				}
-				h += mtn * rg * 1.7 * (rsum / norm_ - 0.42);
+				h += mtn * rg * 2.3 * (rsum / norm_ - 0.42);
 			}
-			// 4. Tablelands: noise-varied soft terraces with jagged outlines.
+			// 4. Tablelands: a warped swell field cut into flat-topped levels (mesas,
+			// buttes, benches) with steep risers; step height, riser width and outline
+			// all vary with noise. Gullies bite into the risers (ravines, notched rims).
+			let rim = 0;
 			if (mesa > 0.003) {
-				const step = 150 + 115 * (n3(x * 4.3 + 8.1, y * 4.3 + 1.4, z * 4.3 + 6.6) + 1);
-				const off = n3(x * 2.1 + 3.7, y * 2.1 + 6.2, z * 2.1 + 9.5) * 0.7 * step;
-				let jit = n3(x * 95 + 4.2, y * 95 + 8.8, z * 95 + 1.6) * 0.2 * step;
-				if (q !== 0) jit += n3(x * 230 + 2.5, y * 230 + 6.3, z * 230 + 9.1) * 0.07 * step;
-				const ramp = 0.06 + 0.04 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
-				const ht = levelHeight(h + jit + off, step, ramp, 0.1) - off - jit * 0.25;
-				h += (ht - h) * mesa;
+				let sw = 0.6 * n3(x * 10 + wx * 1.5 + 4.4, y * 10 + wy * 1.5 + 0.7, z * 10 + wz * 1.5 + 2.9) + 0.3 * n3(x * 26 + 8.6, y * 26 + 5.2, z * 26 + 1.8);
+				sw += 0.13 * n3(x * 64 + 2.1, y * 64 + 9.3, z * 64 + 6.2);
+				if (q !== 0) sw += 0.05 * n3(x * 150 + 2.5, y * 150 + 6.3, z * 150 + 9.1);
+				const field = (sw + 0.12) * 520;
+				if (field > 0) {
+					const step = 170 + 90 * (n3(x * 4.3 + 8.1, y * 4.3 + 1.4, z * 4.3 + 6.6) + 1);
+					const ramp = 0.1 + 0.035 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
+					h += levelHeight(field, step, ramp, 0.07) * mesa;
+					const f = field / step - Math.floor(field / step);
+					rim = smoothstep(0.15, 0.45, f) * (1 - smoothstep(0.5, 0.85, f)) * mesa;
+				}
 			}
-			// 5. Gullies and dry washes: valleys along the zero set of noise.
-			const gA = (30 + 0.22 * rg) * (1 + 1.6 * mesa) * land;
+			// 5. Gullies and dry washes: valleys along the zero set of noise, strongest at
+			// tableland rims.
+			const gA = (12 + 0.1 * rg) * land + 150 * rim;
 			const g1 = 1 - Math.abs(n3(x * 70 + wx * 0.8 + 5.5, y * 70 + wy * 0.8 + 1.2, z * 70 + wz * 0.8 + 7.7));
-			let gully = g1 * g1 * g1;
+			let gully = g1 * g1 * g1 * g1;
 			if (q !== 0) { const g2 = 1 - Math.abs(n3(x * 150 + 2.2, y * 150 + 8.3, z * 150 + 4.4)); gully += 0.5 * g2 * g2 * g2 * g2; }
 			gully = Math.min(gully, 1);
 			h -= gA * gully;
+			// Land cells keep their lowlands above the sea: a soft floor just above 0 m, so
+			// coastlines follow the cells instead of breaking into lagoons.
+			if (H0 > 0 && h < 8) { const k = smoothstep(0, 60, H0); h += (8 + (h - 8) * 0.12 - h) * k; }
 			if (q === 1) h += 5 * n3(x * 330 + 1.5, y * 330 + 7.5, z * 330 + 3.5) * land;
 			// 6. River channels.
 			this.sRivD = 99; this.sRivL = -1e5;

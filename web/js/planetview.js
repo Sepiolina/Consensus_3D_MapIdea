@@ -19,7 +19,6 @@
 	const LOD_RAD = [0.085, 0.2];    // angular distance from the focus where LOD 0 and LOD 1 end
 	const LOD_HYST = 0.02;           // extra distance before a cell is coarsened again
 	const VEG_LOD = 1;               // cells at this LOD or finer carry trees and rocks
-	const SKIRT_DROP = 400.0;        // metres the crack-hiding skirt hangs below a cell edge
 	const AO_R = [0.0018, 0.0055];   // AO probe radii (rad); 0.01 rad = 1 world unit
 	const BORDER_W = 0.02;
 	const SHADOW_SIZE = 2048;
@@ -62,8 +61,8 @@
 			for (const t of [dataTex, maskTex]) { t.magFilter = t.minFilter = THREE.LinearFilter; t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.ClampToEdgeWrapping; t.generateMipmaps = false; t.needsUpdate = true; }
 
 			this.globeMat = mat(S.globeVert, S.globeFrag, { data_tex: { value: dataTex }, mask_tex: { value: maskTex }, sink: { value: 0 }, border_strength: { value: 0 } });
-			this.terrainMat = mat(S.terrainVert, S.terrainFrag, null, { side: THREE.DoubleSide, extensions: { derivatives: true } });
-			this.terrainDepthMat = mat(S.terrainVert, S.depthFrag, null, { side: THREE.DoubleSide });
+			this.terrainMat = mat(S.terrainVert, S.terrainFrag, { skirt_drop: { value: 400 } }, { side: THREE.DoubleSide, extensions: { derivatives: true } });
+			this.terrainDepthMat = mat(S.terrainVert, S.depthFrag, { skirt_drop: { value: 0 } }, { side: THREE.DoubleSide });
 			this.waterMat = mat(S.waterVert, S.waterFrag, null, { side: THREE.DoubleSide, transparent: true, depthWrite: false });
 			this.riverMat = mat(S.riverVert, S.riverFrag, null, { side: THREE.DoubleSide, transparent: true, depthWrite: false });
 			this.borderMat = mat(S.borderVert, S.borderFrag, { lift: { value: 0.04 } }, { side: THREE.DoubleSide });
@@ -240,9 +239,9 @@
 			const rowLen = ((SUB + 1) * (SUB + 2)) / 2, nGrid = m * rowLen, nv = nGrid + m * (SUB + 1);
 			const out = { pos: new Float32Array(nv * 3), data: new Float32Array(nv * 4), nrm: new Float32Array(nv * 4), surf: new Float32Array(nv * 4), col: new Float32Array(nv * 4), riv: new Float32Array(nv) };
 			const idx = [];
-			let side = 0;
-			for (let i = 0; i < m; i++) side += Math.acos(clamp(dot(pc, w.cornerPos[corners[i]]), -1, 1));
-			const eps = (side / m / SUB) * 0.5;
+			// Finite-difference step: fixed per level of detail, so neighbouring cells at
+			// the same level compute identical normals along their shared edge.
+			const eps = 0.02 / SUB;
 			let minH = 1e9, v = 0, start = c;
 			const edgeRows = [];
 			for (let i = 0; i < m; i++) {
@@ -279,7 +278,7 @@
 					for (let k = 0; k < 3; k++) out.pos[v * 3 + k] = out.pos[src * 3 + k];
 					for (let k = 0; k < 4; k++) { out.data[v * 4 + k] = out.data[src * 4 + k]; out.nrm[v * 4 + k] = out.nrm[src * 4 + k]; out.surf[v * 4 + k] = out.surf[src * 4 + k]; out.col[v * 4 + k] = out.col[src * 4 + k]; }
 					out.riv[v] = out.riv[src];
-					out.data[v * 4] -= SKIRT_DROP;
+					out.col[v * 4 + 3] = -1; // skirt: the terrain shader drops it, the sea skips it
 					if (s < SUB) idx.push(src, src + 1, k0 + s, src + 1, k0 + s + 1, k0 + s);
 				}
 			}
@@ -389,9 +388,9 @@
 				["acacia", G.acacia(7), [0.26, 0.27, 0.11], [0.26, 0.19, 0.12], 2],
 				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3],
 				["shrub", G.shrub(9), [0.20, 0.22, 0.09], [0.22, 0.16, 0.10], 4],
-				["tuft", G.tuft(4), [0.52, 0.44, 0.20], [0.40, 0.34, 0.16], 5],
+				["tuft", G.tuft(4), [0.40, 0.36, 0.15], [0.40, 0.34, 0.16], 5],
 				["rock0", G.rock(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6],
-				["rock1", G.rock(29), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6],
+				["rock1", G.rock(29, 0), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6],
 			];
 			this.vegKinds = kinds.map(([name, base, leaf, wood, kind]) => {
 				const geo = new THREE.InstancedBufferGeometry();
@@ -403,7 +402,7 @@
 				const depth = this._mat(S.vegVert, S.depthFrag, extra, { side: THREE.DoubleSide });
 				const mesh = new THREE.Mesh(geo, material);
 				mesh.frustumCulled = false; mesh.visible = false;
-				mesh.layers.enable(1);
+				if (kind !== 5) mesh.layers.enable(1); // grass tufts cast no shadow
 				this.cellsRoot.add(mesh);
 				return { name, geo, mesh, material, depth, cap: 0, buf: null };
 			});
@@ -481,14 +480,14 @@
 				if (p.h < 25 || p.up < 0.86 || p.rivD < 1.35 || p.t < -5 || p.h > 3300) continue;
 				const wet = smoothstep(220, 1500, p.p);
 				const clump = n3(d[0] * 55 + 3.1, d[1] * 55 + 7.7, d[2] * 55 + 1.3) + 0.5 * n3(d[0] * 150 + 9.2, d[1] * 150 + 2.4, d[2] * 150 + 6.6);
-				const riparian = p.rivD < 4.5 ? (1 - wet) * 0.35 : 0;
-				let dens = Math.pow(wet, 1.5) * smoothstep(-0.25, 0.35, clump) * 0.9 + riparian + 0.02;
+				const riparian = p.rivD < 4.5 ? (1 - wet) * 0.3 : 0;
+				let dens = Math.pow(wet, 1.6) * smoothstep(-0.2, 0.3, clump) + riparian * smoothstep(-0.3, 0.2, clump) + 0.008;
 				dens *= 1 - 0.7 * p.mesa * smoothstep(0.95, 0.85, p.up);
-				if (!fine) dens *= 0.3;
+				if (!fine) dens *= 0.16;
 				if (rng.randf() > dens) continue;
 				let kind;
 				const tm = p.t;
-				if (tm < 6 || (tm < 11 && rng.randf() < 0.5)) kind = K.conifer;
+				if (tm < 5 || (tm < 9 && rng.randf() < 0.5) || (p.h > 1600 && rng.randf() < 0.6)) kind = K.conifer;
 				else if (tm > 21 && p.p > 1300 && p.h < 300 && rng.randf() < 0.45) kind = K.palm;
 				else if (tm > 16 && p.p < 1100 && rng.randf() < 0.75) kind = K.acacia;
 				else kind = rng.randf() < 0.5 ? K.broad0 : K.broad1;
@@ -510,7 +509,7 @@
 			}
 			if (fine) {
 				// Shrubs: everywhere vegetated, clustered, denser by water.
-				for (let k = 0; k < 1000; k++) {
+				for (let k = 0; k < 520; k++) {
 					const p = interp(), d = p.d;
 					if (p.h < 18 || p.up < 0.8 || p.rivD < 1.3 || p.t < -8) continue;
 					const wet = smoothstep(150, 1300, p.p);
@@ -520,14 +519,14 @@
 					push(K.shrub, p, 0.6 + 0.9 * rng.randf(), (rng.randf() - 0.5) * 0.2, wet);
 				}
 				// Grass tufts: dry grassland and steppe.
-				for (let k = 0; k < 1600; k++) {
+				for (let k = 0; k < 1300; k++) {
 					const p = interp(), d = p.d;
 					if (p.h < 22 || p.up < 0.85 || p.rivD < 2.2 || p.t < -6) continue;
 					const wet = smoothstep(150, 1300, p.p);
 					const clump = n3(d[0] * 200 + 7.3, d[1] * 200 + 3.9, d[2] * 200 + 5.1);
 					const dens = (0.75 - 0.55 * wet) * smoothstep(-0.2, 0.3, clump) * smoothstep(80, 300, p.p);
 					if (rng.randf() > dens) continue;
-					push(K.tuft, p, 0.7 + 0.8 * rng.randf(), (rng.randf() - 0.5) * 0.3, wet);
+					push(K.tuft, p, 1.1 + 1.0 * rng.randf(), (rng.randf() - 0.5) * 0.3, wet);
 				}
 			}
 			return lists.map((l) => Float32Array.from(l));
