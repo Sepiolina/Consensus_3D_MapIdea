@@ -12,9 +12,9 @@
 
 	const st = {
 		seed: 20261, tDays: 0, timeSpeed: 0.05, paused: false, spin: 0, frameAngle: 0,
-		seaLevel: 0, flood: 0, borders: true, season: 0, seasonRising: true, wall: 0,
+		seaLevel: 0, flood: 0, borders: false, season: 0, seasonRising: true, wall: 0,
 		alt: 330, altTarget: 330, focus: new THREE.Vector3(0.75, 0.45, 0.48).normalize(), heading: 0, pitchUser: 0,
-		selected: -1, ready: false, generating: false, fps: 60,
+		selected: -1, ready: false, generating: false, fps: 60, buildBudget: 7,
 	};
 	let world, system, view, systemRoot, orbitRoot, starMesh, corona, moon, bodies = [], labels = [];
 
@@ -304,6 +304,7 @@
 		sh.sea_level.value = st.seaLevel; sh.season.value = st.season; sh.flood.value = st.flood; sh.wall_time.value = st.wall;
 		sh.sun_dir_local.value.copy(sunLocal); sh.sun_dir_world.value.copy(sunDir);
 		sh.border_strength.value = st.borders ? 1 : 0;
+		view.setBorders(st.borders);
 		view.globeMat.uniforms.border_strength.value = st.borders ? 0.22 : 0;
 		atmoMat.uniforms.sun_dir_world.value.copy(sunDir);
 
@@ -326,9 +327,10 @@
 		starField.position.copy(camera.position);
 
 		const camHeight = camera.position.length() - R;
-		view.update(fl, camHeight, detail, 7);
+		view.update(fl, camHeight, detail, st.buildBudget); // ms of cell building per frame
 		const camLocal = camera.position.clone().applyQuaternion(q.copy(planetQ).invert()).normalize();
 		view.cull([camLocal.x, camLocal.y, camLocal.z], camHeight);
+		view.renderShadows(renderer, sunDir, target, fl, st.alt);
 
 		// The glow quad faces the camera and never shrinks below a few pixels.
 		const glow = Math.max(STAR_R * 3.5, starPos.distanceTo(camera.position) * 0.05);
@@ -357,7 +359,7 @@
 	}
 
 	// Small test/automation hook.
-	POC.app = { st, generate, get view() { return view; }, get world() { return world; }, get system() { return system; } };
+	POC.app = { st, generate, renderer, camera, get view() { return view; }, get world() { return world; }, get system() { return system; } };
 
 	if (window.matchMedia("(max-width: 720px)").matches) for (const d of document.querySelectorAll("details.panel")) d.open = false;
 	resize();

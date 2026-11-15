@@ -45,11 +45,13 @@
 				lerp(lerp(grad(p[AA], x, y, z), grad(p[BA], x - 1, y, z), u), lerp(grad(p[AB], x, y - 1, z), grad(p[BB], x - 1, y - 1, z), u), v),
 				lerp(lerp(grad(p[AA + 1], x, y, z - 1), grad(p[BA + 1], x - 1, y, z - 1), u), lerp(grad(p[AB + 1], x, y - 1, z - 1), grad(p[BB + 1], x - 1, y - 1, z - 1), u), v), w);
 		}
-		return function (x, y, z) {
+		const fbm = function (x, y, z) {
 			let a = 1, f = 1, s = 0, norm = 0;
 			for (let i = 0; i < octaves; i++) { s += a * n3(x * f + i * 19.1, y * f + i * 7.3, z * f + i * 3.7); norm += a; a *= 0.5; f *= 2; }
 			return (s / norm) * 1.5;
 		};
+		fbm.n3 = n3; // single octave, roughly -1..1
+		return fbm;
 	}
 	const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 	const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -70,22 +72,27 @@
 	const BIOME_NAMES = ["Ocean", "Ice cap", "Tundra", "Taiga (boreal forest)", "Cold desert", "Steppe / grassland", "Mediterranean shrubland", "Temperate forest", "Temperate rainforest", "Hot desert", "Savanna", "Tropical seasonal forest", "Tropical rainforest", "Alpine"];
 	const B = { OCEAN: 0, ICE: 1, TUNDRA: 2, TAIGA: 3, COLD_DESERT: 4, STEPPE: 5, MEDITERRANEAN: 6, TEMPERATE_FOREST: 7, TEMPERATE_RAINFOREST: 8, DESERT: 9, SAVANNA: 10, TROPICAL_SEASONAL: 11, TROPICAL_RAINFOREST: 12, ALPINE: 13 };
 
-	const LEVEL_STEP = 300.0;  // metres between terrace levels
-	const LEVEL_RAMP = 0.05;   // half-width of the cliff between levels, as a fraction of a step
 	const NOISE_FREQ = 38.0;
 	const RIVER_MIN_FLOW = 2000.0;
 
-	// Snaps a raw height to flat terrace levels (plateaus at 150, 450, 750 m ... and
-	// -150, -450 m under water) joined by short cliffs. The coastline (0 m) sits in the
-	// middle of a cliff; high mountains keep their natural shape.
-	function levelHeight(h) {
-		const y = h / LEVEL_STEP + 0.5;
-		const b = Math.floor(y);
-		const t = (b - 0.5 + smoothstep(0.5 - LEVEL_RAMP, 0.5 + LEVEL_RAMP, y - b)) * LEVEL_STEP;
-		const k = smoothstep(2000, 3200, h);
-		return t + (h - t) * k;
+	// ---- continuous surface (see surface()): tuning shared with planetview.js
+	const KERNEL_R = 0.09;            // radius (rad) of the smooth kernel that blends cell values
+	const KERNEL_INV = 1 / (1 - Math.cos(KERNEL_R));
+	const SEA_K = 0.06;               // ocean depths are compressed by this before blending, so coasts stay put
+	const WARP = 0.011;               // domain warp of the kernel lookup (rad): breaks up the Voronoi pattern
+	const RIVER_REACH = 1.6;          // world units (1 = PLANET_R / 100) beyond which a river does not carve
+
+	// Soft terrace ("levelled" mesa country): flat benches at multiples of `step`
+	// joined by short steep risers. `ramp` is the riser half-width as a fraction of a
+	// step; `tilt` keeps a little of the original slope on the flats so they are not
+	// glass-flat. Used by surface() under a noise mask, so only some regions are mesas.
+	function levelHeight(h, step, ramp, tilt) {
+		step = step || 300; ramp = ramp === undefined ? 0.08 : ramp; tilt = tilt === undefined ? 0.12 : tilt;
+		const y = h / step, k = Math.floor(y), f = y - k;
+		return (k + tilt * f + (1 - tilt) * smoothstep(0.5 - ramp, 0.5 + ramp, f)) * step;
 	}
-	const riverWidth = (q) => clamp(0.05 * Math.pow(Math.max(q, 1) / 1000, 0.4), 0.08, 0.6);
+	// River channel width in world units from discharge (m3/s).
+	const riverWidth = (q) => clamp(0.1 * Math.pow(Math.max(q, 1) / 1000, 0.35), 0.14, 0.7);
 
 	class WorldGen {
 		constructor() {
@@ -93,6 +100,8 @@
 			this.texW = 2048; this.texH = 1024;
 			// result of the last sample()
 			this.sH = 0; this.sT = 0; this.sA = 0; this.sP = 0; this.sWc = 1;
+			this._p = [0, 0, 1]; // scratch direction for surface()
+			this.sRock = [0.5, 0.5, 0.5]; this.sMesa = 0; this.sGully = 0; this.sMtn = 0; this.sRivD = 99; this.sRivL = -1e5; this.sCell = 0;
 		}
 
 		static get STEP_NAMES() { return ["Voronoi cells", "Tectonic plates and elevation", "Climate", "Rivers", "Biomes and geology"]; }
@@ -102,7 +111,7 @@
 			else if (i === 1) this._makeElevation();
 			else if (i === 2) this._makeClimate();
 			else if (i === 3) this._makeRivers();
-			else if (i === 4) { this._makeBiomes(); this._makeCorners(); }
+			else if (i === 4) { this._makeBiomes(); this._makeCorners(); this._makeSurface(); }
 		}
 		generateAll() { for (let i = 0; i < 5; i++) this.genStep(i); }
 
@@ -110,6 +119,7 @@
 			this.rng = new RNG(this.seed);
 			this.noise = makeNoise(this.seed, 5);
 			this.detailNoise = makeNoise(this.seed + 77, 3);
+			this.sn = makeNoise(this.seed + 4242, 1).n3; // raw gradient noise for the sub-cell surface
 			this.cellAreaKm2 = (4 * Math.PI * this.radiusKm * this.radiusKm) / this.nCells;
 		}
 
@@ -373,6 +383,7 @@
 					}
 				}
 			}
+			this.fillLevel = wl; // derived: strictly decreases downstream
 			const downhill = (this.downhill = new Int32Array(n).fill(-1)), order = [];
 			for (let c = 0; c < n; c++) {
 				if (elev[c] <= 0) continue;
@@ -400,12 +411,21 @@
 		}
 		// River polylines inside cell c: [{pts, w0, w1}]. Curves cross cell borders on the
 		// line joining the two sites, so consecutive pieces join smoothly.
+		// `bed` (when the surface data exists) is the water level in metres at each point:
+		// it never rises downstream and meets the neighbouring piece exactly at the border.
 		riverPaths(c) {
 			const out = [];
 			if (!this.hasRiver[c]) return out;
-			const pc = this.sites[c], mOut = norm(add(pc, this.sites[this.downhill[c]])), w1 = riverWidth(this.flux[c]), ups = this.riverUp[c];
-			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 8), w0: w1 * 0.5, w1 }); }
-			else for (const j of ups) out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 14), w0: riverWidth(this.flux[j]), w1 });
+			const pc = this.sites[c], dn = this.downhill[c], mOut = norm(add(pc, this.sites[dn])), w1 = riverWidth(this.flux[c]), ups = this.riverUp[c];
+			const bed = this.riverBed, bc = bed ? bed[c] : 0;
+			const bOut = bed ? (this.hasRiver[dn] ? (bc + bed[dn]) * 0.5 : Math.min(bc, -4)) : 0;
+			const beds = (n, b0, bm, b1, headwater) => {
+				const a = [];
+				for (let k = 0; k <= n; k++) { const t = k / n; a.push(headwater ? b0 + (b1 - b0) * t : t < 0.5 ? b0 + (bm - b0) * t * 2 : bm + (b1 - bm) * (t * 2 - 1)); }
+				return a;
+			};
+			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 8), w0: w1 * 0.5, w1, bed: beds(8, bc, bc, bOut, true) }); }
+			else for (const j of ups) out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 14), w0: riverWidth(this.flux[j]), w1, bed: beds(14, bed ? (bed[j] + bc) * 0.5 : 0, bc, bOut, false) });
 			return out;
 		}
 
@@ -459,38 +479,216 @@
 			}
 		}
 
-		// Continuous surface at unit vector d: fills sH (m), sT, sA (deg C), sP (mm/yr),
-		// sWc (0 at the cell edge, 1 at the site). Returns the cell index.
-		sample(d, start) {
-			const c = this.locate(d, start), wn = this.cellWn[c], cc = this.cellCorner[c], m = wn.length;
-			let idx = -1, sa = 0, sb = 0, prev = dot(wn[0], d);
+		// ---------------------------------------------------------- Continuous surface
+		// Derived data for surface(): nothing here changes the per-cell values above.
+		_makeSurface() {
+			const n = this.nCells, sites = this.sites;
+			// Two-ring neighbourhoods: every site the smooth kernel can reach from a cell.
+			this.ring2 = new Array(n);
+			for (let c = 0; c < n; c++) {
+				const set = new Set([c]);
+				for (const j of this.cellNb[c]) { set.add(j); for (const k of this.cellNb[j]) set.add(k); }
+				this.ring2[c] = Int32Array.from(set);
+			}
+			// Per-cell values the kernel blends: compressed elevation, mesa (tableland)
+			// propensity and bedrock colour.
+			this.elevK = new Float32Array(n); this.mesaP = new Float32Array(n);
+			for (let c = 0; c < n; c++) {
+				const h = this.elev[c], r = this.rock[c];
+				this.elevK[c] = h > 0 ? h : h * SEA_K;
+				let m = r === ROCK.SANDSTONE ? 1 : r === ROCK.LIMESTONE ? 0.8 : r === ROCK.GRANITE ? 0.35 : r === ROCK.VOLCANIC ? 0.3 : 0.12;
+				m *= 1 - 0.55 * smoothstep(600, 1700, this.precip[c]);   // dry country weathers into mesas
+				m *= 1 - smoothstep(1400, 2800, h);                         // not in the high ranges
+				this.mesaP[c] = h > 0 ? m : 0;
+			}
+			// River beds: water level at each river site, never rising downstream.
+			this.riverBed = null;
+			const bed = new Float32Array(n), order = [];
+			for (let c = 0; c < n; c++) if (this.hasRiver[c]) order.push(c);
+			order.sort((a, b) => this.fillLevel[b] - this.fillLevel[a]);
+			this._noRiver = true;
+			for (const c of order) {
+				this.surface(sites[c], c, 1);
+				let b = this.sH - 14;
+				for (const j of this.riverUp[c]) b = Math.min(b, bed[j]);
+				bed[c] = b;
+			}
+			this._noRiver = false;
+			this.riverBed = bed;
+			// Channel segments per river cell: a, b, water level at a and b, width at a and b.
+			this.riverSeg = new Array(n).fill(null);
+			for (const c of order) {
+				const seg = [];
+				for (const path of this.riverPaths(c)) {
+					const pts = path.pts, m = pts.length;
+					for (let k = 0; k < m - 1; k++) {
+						const wa = path.w0 + (path.w1 - path.w0) * (k / (m - 1)), wb = path.w0 + (path.w1 - path.w0) * ((k + 1) / (m - 1));
+						seg.push(pts[k][0], pts[k][1], pts[k][2], pts[k + 1][0], pts[k + 1][1], pts[k + 1][2], path.bed[k], path.bed[k + 1], wa, wb);
+					}
+				}
+				this.riverSeg[c] = Float64Array.from(seg);
+			}
+			this.riverNear = new Array(n);
+			for (let c = 0; c < n; c++) this.riverNear[c] = Int32Array.from(Array.from(this.ring2[c]).filter((j) => this.hasRiver[j]));
+		}
+
+		// Weight of the site in the (site, corner, corner) triangle under d: 0 on the cell
+		// edge, 1 at the site. Used for the border lines baked into the globe map.
+		_edgeWeight(c, d) {
+			const wn = this.cellWn[c], m = wn.length;
+			let prev = dot(wn[0], d);
 			for (let i = 0; i < m; i++) {
 				const nxt = dot(wn[(i + 1) % m], d);
-				if (prev >= 0 && nxt < 0) { idx = i; sb = prev; sa = -nxt; break; }
+				if (prev >= 0 && nxt < 0) {
+					const sb = prev, sa = -nxt, cw = Math.max(0, dot(this.cellEn[c][i], d)), tot = sa + sb + cw;
+					return tot > 0 ? cw / tot : 1;
+				}
 				prev = nxt;
 			}
-			let h = this.elev[c], t = this.tempMean[c], a = this.tempAmp[c], p = this.precip[c], r = this.rug[c];
-			this.sWc = 1;
-			if (idx >= 0) {
-				let cw = Math.max(0, dot(this.cellEn[c][idx], d));
-				const tot = sa + sb + cw;
-				if (tot > 0) {
-					const ia = cc[idx], ib = cc[(idx + 1) % m];
-					sa /= tot; sb /= tot; cw /= tot;
-					h = h * cw + this.cornerH[ia] * sa + this.cornerH[ib] * sb;
-					t = t * cw + this.cornerT[ia] * sa + this.cornerT[ib] * sb;
-					a = a * cw + this.cornerA[ia] * sa + this.cornerA[ib] * sb;
-					p = p * cw + this.cornerP[ia] * sa + this.cornerP[ib] * sb;
-					r = r * cw + this.cornerRug[ia] * sa + this.cornerRug[ib] * sb;
-					this.sWc = cw;
-				}
+			return 1;
+		}
+
+		// The continuous sub-cell surface: ONE function of direction, used by the cell
+		// meshes, the baked globe map, rivers, vegetation and the camera, so nothing
+		// floats or cracks. Fills sH (m), sT, sA (deg C), sP (mm/yr), plus
+		//   sMesa  0..1 tableland mask (cliffs and layered rock),
+		//   sGully 0..1 erosion-channel strength (dry washes),
+		//   sRivD  distance to the nearest channel centre over its half width (99 = none),
+		//   sRivL  that river's water level in metres (-1e5 = none),
+		//   sRock  blended bedrock colour, sWc (bake only) cell-edge weight.
+		// q: 0 = coarse (globe bake), 1 = full, 2 = no finest octaves (AO probes).
+		// Returns the cell index.
+		//
+		// Layers, in order: domain-warped smooth kernel blend of the cell elevations ->
+		// broad swells and rolling hills (amplitude from `rug`) -> ridged noise in
+		// mountain belts -> soft terraces (mesas, buttes, benches) under a noise mask ->
+		// ridged gullies -> river channels with sandy banks and valley walls.
+		surface(d, start, q) {
+			const n3 = this.sn, sites = this.sites, x = d[0], y = d[1], z = d[2];
+			const c = this.locate(d, start);
+			this.sWc = q === 0 ? this._edgeWeight(c, d) : 1;
+			// 1. Domain warp, then the kernel blend of cell values.
+			const wx = n3(x * 6.1 + 1.7, y * 6.1 + 9.2, z * 6.1 + 3.1) + 0.45 * n3(x * 15.3 + 7.7, y * 15.3 + 2.2, z * 15.3 + 5.5);
+			const wy = n3(x * 6.1 + 11.3, y * 6.1 + 4.4, z * 6.1 + 8.8) + 0.45 * n3(x * 15.3 + 1.1, y * 15.3 + 9.9, z * 15.3 + 3.3);
+			const wz = n3(x * 6.1 + 5.9, y * 6.1 + 13.7, z * 6.1 + 0.6) + 0.45 * n3(x * 15.3 + 6.6, y * 15.3 + 4.8, z * 15.3 + 12.1);
+			const P = this._p;
+			P[0] = x + wx * WARP; P[1] = y + wy * WARP; P[2] = z + wz * WARP;
+			const pl = Math.hypot(P[0], P[1], P[2]); P[0] /= pl; P[1] /= pl; P[2] /= pl;
+			const cp = this.locate(P, c), ring = this.ring2[cp];
+			let ws = 0, hk = 0, t = 0, a = 0, pr = 0, rg = 0, ms = 0, r0 = 0, r1 = 0, r2 = 0;
+			for (let i = 0; i < ring.length; i++) {
+				const j = ring[i], s = sites[j];
+				const u = (1 - (s[0] * P[0] + s[1] * P[1] + s[2] * P[2])) * KERNEL_INV;
+				if (u >= 1) continue;
+				let w = 1 - u; w = w * w * w;
+				ws += w; hk += w * this.elevK[j]; t += w * this.tempMean[j]; a += w * this.tempAmp[j]; pr += w * this.precip[j];
+				rg += w * this.rug[j]; ms += w * this.mesaP[j];
+				const rc = ROCK_COLORS[this.rock[j]]; r0 += w * rc[0]; r1 += w * rc[1]; r2 += w * rc[2];
 			}
-			const dz = this.detailNoise(d[0] * NOISE_FREQ, d[1] * NOISE_FREQ, d[2] * NOISE_FREQ) * r;
-			this.sH = levelHeight(h + dz);
-			this.sT = t - 0.0065 * (this.sH - h);
-			this.sA = a; this.sP = p;
+			if (ws <= 0) { ws = 1; hk = this.elevK[c]; t = this.tempMean[c]; a = this.tempAmp[c]; pr = this.precip[c]; rg = this.rug[c]; ms = this.mesaP[c]; const rc = ROCK_COLORS[this.rock[c]]; r0 = rc[0]; r1 = rc[1]; r2 = rc[2]; }
+			const iw = 1 / ws;
+			hk *= iw; t *= iw; a *= iw; pr *= iw; rg *= iw; ms *= iw;
+			const H0 = hk >= 0 ? hk : hk / SEA_K;
+			const land = smoothstep(-160, 40, H0);
+			let h = H0;
+			// 2. Broad swells and rolling hills.
+			const mesaN = n3(x * 9.7 + 2.9, y * 9.7 + 7.1, z * 9.7 + 4.6);
+			const mesa = clamp(ms * 1.6, 0, 1) * smoothstep(-0.12, 0.22, mesaN) * land;
+			const hillA = (rg * (0.85 + 1.2 * mesa)) * (0.25 + 0.75 * land);
+			let hill = 0.55 * n3(x * 13 + 0.3, y * 13 + 5.1, z * 13 + 2.2);
+			hill += 0.5 * n3(x * 41 + 3.3, y * 41 + 1.9, z * 41 + 8.4) + 0.25 * n3(x * 87 + 6.1, y * 87 + 2.6, z * 87 + 0.9);
+			if (q !== 0) hill += 0.12 * n3(x * 181 + 9.4, y * 181 + 3.9, z * 181 + 7.2);
+			h += hillA * hill;
+			// 3. Ridged noise in mountain belts.
+			const mtn = smoothstep(240, 650, rg) * land;
+			if (mtn > 0) {
+				let rsum = 0, amp = 1, f = 34, norm_ = 0;
+				const oct = q === 0 ? 3 : 5;
+				for (let o = 0; o < oct; o++) {
+					const v = 1 - Math.abs(n3(x * f + o * 7.7, y * f + o * 3.1, z * f + o * 5.3));
+					rsum += amp * v * v; norm_ += amp; amp *= 0.5; f *= 2.1;
+				}
+				h += mtn * rg * 1.7 * (rsum / norm_ - 0.42);
+			}
+			// 4. Tablelands: noise-varied soft terraces with jagged outlines.
+			if (mesa > 0.003) {
+				const step = 150 + 115 * (n3(x * 4.3 + 8.1, y * 4.3 + 1.4, z * 4.3 + 6.6) + 1);
+				const off = n3(x * 2.1 + 3.7, y * 2.1 + 6.2, z * 2.1 + 9.5) * 0.7 * step;
+				let jit = n3(x * 95 + 4.2, y * 95 + 8.8, z * 95 + 1.6) * 0.2 * step;
+				if (q !== 0) jit += n3(x * 230 + 2.5, y * 230 + 6.3, z * 230 + 9.1) * 0.07 * step;
+				const ramp = 0.06 + 0.04 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
+				const ht = levelHeight(h + jit + off, step, ramp, 0.1) - off - jit * 0.25;
+				h += (ht - h) * mesa;
+			}
+			// 5. Gullies and dry washes: valleys along the zero set of noise.
+			const gA = (30 + 0.22 * rg) * (1 + 1.6 * mesa) * land;
+			const g1 = 1 - Math.abs(n3(x * 70 + wx * 0.8 + 5.5, y * 70 + wy * 0.8 + 1.2, z * 70 + wz * 0.8 + 7.7));
+			let gully = g1 * g1 * g1;
+			if (q !== 0) { const g2 = 1 - Math.abs(n3(x * 150 + 2.2, y * 150 + 8.3, z * 150 + 4.4)); gully += 0.5 * g2 * g2 * g2 * g2; }
+			gully = Math.min(gully, 1);
+			h -= gA * gully;
+			if (q === 1) h += 5 * n3(x * 330 + 1.5, y * 330 + 7.5, z * 330 + 3.5) * land;
+			// 6. River channels.
+			this.sRivD = 99; this.sRivL = -1e5;
+			if (!this._noRiver && this.riverNear) {
+				const near = this.riverNear[c];
+				if (near.length) h = this._carveRivers(d, near, h, mesa);
+			}
+			this.sH = h;
+			this.sT = t - 0.0065 * (h - H0);
+			this.sA = a; this.sP = pr;
+			this.sMesa = mesa; this.sGully = gully * land; this.sMtn = mtn;
+			const sr = this.sRock; sr[0] = r0 * iw; sr[1] = r1 * iw; sr[2] = r2 * iw;
+			this.sCell = c;
 			return c;
 		}
+
+		// Lowers (and right beside the water, levels) the ground into river channels:
+		// a parabolic bed under the water, low sandy banks, then valley walls whose
+		// steepness grows in mesa country (canyons). Confluences take the lowest profile.
+		_carveRivers(d, near, h, mesa) {
+			const x = d[0], y = d[1], z = d[2];
+			const COS_REJECT = Math.cos(0.05 + RIVER_REACH / 100);
+			let best = 1e9, bestD = 99, bestL = -1e5, bestX = 1e9;
+			for (let i = 0; i < near.length; i++) {
+				const r = near[i], s = this.sites[r];
+				if (s[0] * x + s[1] * y + s[2] * z < COS_REJECT) continue;
+				const seg = this.riverSeg[r];
+				for (let k = 0; k < seg.length; k += 10) {
+					const ax = seg[k], ay = seg[k + 1], az = seg[k + 2];
+					const ex = seg[k + 3] - ax, ey = seg[k + 4] - ay, ez = seg[k + 5] - az;
+					const ll = ex * ex + ey * ey + ez * ez;
+					let tt = ll > 0 ? ((x - ax) * ex + (y - ay) * ey + (z - az) * ez) / ll : 0;
+					tt = tt < 0 ? 0 : tt > 1 ? 1 : tt;
+					const dx = x - ax - ex * tt, dy = y - ay - ey * tt, dz = z - az - ez * tt;
+					const dist = Math.sqrt(dx * dx + dy * dy + dz * dz) * 100; // world units
+					if (dist > RIVER_REACH) continue;
+					const wl = seg[k + 6] + (seg[k + 7] - seg[k + 6]) * tt;
+					const hw = 0.5 * (seg[k + 8] + (seg[k + 9] - seg[k + 8]) * tt);
+					const bankW = 0.18 + 0.6 * hw;
+					let prof;
+					if (dist < hw) { const u = dist / hw; prof = wl - (14 + 50 * hw) * (1 - u * u); }
+					else {
+						const xb = dist - hw;
+						prof = wl + 4 + 22 * smoothstep(0, bankW, xb);
+						if (xb > bankW) { const xw = xb - bankW; prof += (420 + 1600 * mesa) * xw + 900 * xw * xw; }
+						if (dist > RIVER_REACH - 0.5) { const e = dist - (RIVER_REACH - 0.5); prof += 30000 * e * e; }
+					}
+					if (prof < best) { best = prof; bestL = wl; bestX = dist - hw; bestD = dist / hw; }
+				}
+			}
+			if (best >= 1e9) return h;
+			this.sRivD = bestD; this.sRivL = bestL;
+			// Smooth minimum against the ground so the valley rim is rounded, not creased.
+			const k = 18, hh = clamp(0.5 + 0.5 * (h - best) / k, 0, 1);
+			const out = Math.min(h + (best - h) * hh - k * hh * (1 - hh), h);
+			// Right beside the water the banks are levelled to the profile (also raised).
+			const lev = 1 - smoothstep(0.1, 0.35, bestX);
+			return out + (best - out) * lev;
+		}
+
+		// Legacy name: the full-quality surface.
+		sample(d, start) { return this.surface(d, start, 1); }
 
 		cellInfo(c) {
 			const p = this.sites[c], lat = deg(Math.asin(clamp(p[1], -1, 1)));
@@ -523,7 +721,7 @@
 				let c = this._bakeCell, o = this._bakeY * W * 4;
 				for (let x = 0; x < W; x++, o += 4) {
 					d[0] = cl * this._cosLon[x]; d[1] = sl; d[2] = cl * this._sinLon[x];
-					c = this.sample(d, c);
+					c = this.surface(d, c, 0);
 					if (x === 0) this._bakeCell = c;
 					this.data[o] = this.sH / 10000; this.data[o + 1] = this.sT / 50; this.data[o + 2] = this.sA / 50; this.data[o + 3] = this.sP / 4000;
 					this.mask[o] = clamp(1 - this.sWc / 0.1, 0, 1) * 255; this.mask[o + 2] = this.pop[c] * 255; this.mask[o + 3] = 255;
