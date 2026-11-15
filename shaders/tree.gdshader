@@ -6,6 +6,7 @@ shader_type spatial;
 varying float v_tnow;
 varying float v_tmean;
 varying float v_rand;
+varying float v_up;
 
 void vertex() {
 	float h = INSTANCE_CUSTOM.r * 10000.0;
@@ -19,6 +20,7 @@ void vertex() {
 	float broad = smoothstep(8.0, 16.0, v_tmean);
 	vec3 p = VERTEX;
 	p.y += 0.17;
+	v_up = p.y / 0.34;
 	p.xz *= mix(1.0, 1.45, broad);
 	p.y *= mix(1.0, 0.78, broad);
 	p *= grow;
@@ -35,7 +37,9 @@ void fragment() {
 	float dormant = (1.0 - smoothstep(1.0, 9.0, v_tnow)) * temperate;
 	col = mix(col, vec3(0.66, 0.36, 0.10), dormant * 0.8);
 	col = mix(col, vec3(0.93, 0.96, 1.0), (1.0 - smoothstep(-4.0, 0.0, v_tnow)) * 0.75);
-	ALBEDO = col * (0.85 + 0.3 * v_rand);
+	// Darker skirt, sunlit tip.
+	col *= (0.85 + 0.3 * v_rand) * mix(0.62, 1.18, clamp(v_up, 0.0, 1.0));
+	ALBEDO = haze(col, VERTEX);
 	ROUGHNESS = 0.9;
 	SPECULAR = 0.1;
 }

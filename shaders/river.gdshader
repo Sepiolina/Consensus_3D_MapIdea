@@ -34,7 +34,7 @@ void fragment() {
 	}
 	vec3 col = mix(vec3(0.16, 0.50, 0.76), vec3(0.46, 0.40, 0.28), clamp(v_flood, 0.0, 1.0) * 0.6);
 	col = mix(col, vec3(0.85, 0.92, 0.97), 1.0 - smoothstep(-6.0, -3.0, v_tnow));
-	ALBEDO = col;
+	ALBEDO = haze(col, VERTEX);
 	ROUGHNESS = 0.3;
 	SPECULAR = 0.5;
 }

@@ -11,6 +11,8 @@ const TEX_W := 1024
 const TEX_H := 512
 const NOISE_FREQ := 38.0
 const RIVER_MIN_FLOW := 2000.0 # m3/s
+const LEVEL_STEP := 300.0  # metres between terrace levels
+const LEVEL_RAMP := 0.16   # half-width of the cliff between two levels, as a fraction of a step
 const STEP_NAMES := ["Voronoi cells", "Tectonic plates and elevation", "Climate", "Rivers", "Biomes and geology"]
 
 enum Rock { BASALT, GRANITE, SANDSTONE, LIMESTONE, METAMORPHIC, ANDESITE, VOLCANIC }
@@ -745,6 +747,16 @@ func _make_corners() -> void:
 
 # ---------------------------------------------------------------- Queries
 
+## Snaps a raw height to flat terrace levels (plateaus at 150 m, 450 m, 750 m ... and
+## -150 m, -450 m ... under water) joined by short cliffs. The coastline (0 m) sits in
+## the middle of a cliff, and high mountains keep their natural shape.
+static func level_height(h: float) -> float:
+	var y := h / LEVEL_STEP + 0.5
+	var b := floorf(y)
+	var t := (b - 0.5 + smoothstep(0.5 - LEVEL_RAMP, 0.5 + LEVEL_RAMP, y - b)) * LEVEL_STEP
+	return lerpf(t, h, smoothstep(2000.0, 3200.0, h))
+
+
 ## Nearest site to unit vector `d`, by walking the neighbour graph from `start`.
 func locate(d: Vector3, start: int) -> int:
 	var cur := clampi(start, 0, n_cells - 1)
@@ -805,8 +817,8 @@ func sample(d: Vector3, start: int) -> int:
 			r = r * cw + corner_rug[ia] * sa + corner_rug[ib] * sb
 			s_wc = cw
 	var dz := detail_noise.get_noise_3dv(d * NOISE_FREQ) * r
-	s_h = h + dz
-	s_t = t - 0.0065 * dz
+	s_h = level_height(h + dz)
+	s_t = t - 0.0065 * (s_h - h)
 	s_a = a
 	s_p = p
 	return c

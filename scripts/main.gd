@@ -43,6 +43,7 @@ var frame_angle := 0.0
 var sea_level := 0.0
 var flood := 0.0
 var borders_on := true
+var shadows_on := true
 var season := 0.0
 var _prev_season := 0.0
 var _season_rising := true
@@ -93,9 +94,18 @@ func _build_environment() -> void:
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.35, 0.42, 0.6)
-	env.ambient_light_energy = 0.22
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.ambient_light_energy = 0.3
+	env.tonemap_mode = Environment.TONE_MAPPER_ACES
+	env.tonemap_white = 6.0
 	env.glow_enabled = true
+	env.glow_intensity = 0.6
+	env.glow_bloom = 0.05
+	env.ssao_enabled = true # Forward+ only; ignored by the other renderers
+	env.ssao_radius = 0.6
+	env.ssao_intensity = 1.5
+	env.adjustment_enabled = true
+	env.adjustment_saturation = 1.12
+	env.adjustment_contrast = 1.05
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
@@ -107,8 +117,12 @@ func _build_environment() -> void:
 	cam.make_current()
 
 	sun_light = DirectionalLight3D.new()
-	sun_light.light_energy = 1.5
-	sun_light.shadow_enabled = false
+	sun_light.light_energy = 1.6
+	sun_light.shadow_enabled = false # switched on in the close-up map view
+	sun_light.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS
+	sun_light.directional_shadow_blend_splits = true
+	sun_light.shadow_bias = 0.04
+	sun_light.shadow_normal_bias = 1.2
 	add_child(sun_light)
 
 	var atm := MeshInstance3D.new()
@@ -178,6 +192,12 @@ func _build_hud() -> void:
 	cb.focus_mode = Control.FOCUS_NONE
 	cb.toggled.connect(_on_borders)
 	box.add_child(cb)
+	var sb := CheckBox.new()
+	sb.text = "Sun shadows (map view)"
+	sb.button_pressed = true
+	sb.focus_mode = Control.FOCUS_NONE
+	sb.toggled.connect(_on_shadows)
+	box.add_child(sb)
 	var pause_btn := Button.new()
 	pause_btn.text = "Pause / resume (Space)"
 	pause_btn.focus_mode = Control.FOCUS_NONE
@@ -208,6 +228,10 @@ func _on_flood(v: float) -> void:
 
 func _on_borders(on: bool) -> void:
 	borders_on = on
+
+
+func _on_shadows(on: bool) -> void:
+	shadows_on = on
 
 
 func _on_pause() -> void:
@@ -528,6 +552,7 @@ func _process(delta: float) -> void:
 	view.set_shared("sea_level", sea_level)
 	view.set_shared("season", season)
 	view.set_shared("sun_dir_local", sun_local)
+	view.set_shared("sun_dir_world", sun_dir)
 	view.set_shared("wall_time", wall_time)
 	view.set_shared("flood", flood)
 	view.set_shared("border_strength", (1.0 if borders_on else 0.0))
@@ -562,6 +587,9 @@ func _process(delta: float) -> void:
 	cam.look_at_from_position(cam_pos, target, cam_up)
 
 	view.update_view(focus_local, cam_pos.length() - R, detail, 6)
+	# Terraces, trees and houses cast sun shadows once the 3D relief is up.
+	sun_light.shadow_enabled = shadows_on and detail > 0.5
+	sun_light.directional_shadow_max_distance = clampf(alt * 4.0, 40.0, 300.0)
 
 	# The glow quad faces the camera and never shrinks below a few pixels.
 	var star_dist := (star_pos - cam_pos).length()

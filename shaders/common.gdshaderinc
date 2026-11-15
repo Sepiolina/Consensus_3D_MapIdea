@@ -1,20 +1,21 @@
 // Shared by every planet shader. Keep the constants in sync with planet_view.gd.
 const float PLANET_R = 100.0;
-const float HEIGHT_SCALE = 0.0004; // world units per metre (exaggerated ~25x)
-const float SEA_FLOOR = 1.0;       // deepest rendered sea bed, in world units
+const float RELIEF_MAX = 3.6;     // world units the highest peaks approach
+const float RELIEF_H0 = 2500.0;   // metres; lowlands are exaggerated more than peaks
+const float SEA_FLOOR = 1.0;      // deepest rendered sea bed, in world units
 
 uniform float sea_level = 0.0;     // metres relative to the generated datum
 uniform float detail = 0.0;        // 0 = flat globe, 1 = full 3D relief
 uniform float season = 0.0;        // -1 = northern winter solstice, +1 = northern summer
 uniform vec3 sun_dir_local = vec3(1.0, 0.0, 0.0); // sun direction in planet space
+uniform vec3 sun_dir_world = vec3(1.0, 0.0, 0.0);
 uniform float wall_time = 0.0;     // real seconds, for cosmetic animation
 
 float disp(float h) {
-	float d = h * HEIGHT_SCALE;
 	if (h >= 0.0) {
-		return d;
+		return RELIEF_MAX * (1.0 - exp(-h / RELIEF_H0));
 	}
-	return -SEA_FLOOR * (1.0 - exp(d / SEA_FLOOR));
+	return -SEA_FLOOR * (1.0 - exp(h * RELIEF_MAX / RELIEF_H0 / SEA_FLOOR));
 }
 
 float hash13(vec3 p) {
@@ -82,7 +83,22 @@ vec3 land_color(float h, float tnow, float tmean, float precip, vec3 dir, vec3 r
 	col = mix(col, rock, smoothstep(1800.0, 3600.0, h) * 0.85);
 	float snow = 1.0 - smoothstep(-5.0, 0.5, tnow + (n - 0.5) * 4.0);
 	col = mix(col, vec3(0.95, 0.97, 1.0), snow);
+	// Higher terraces read slightly lighter, so the levels separate visually.
+	col *= 0.92 + 0.14 * smoothstep(0.0, 1800.0, h);
 	return col * (0.9 + 0.2 * n);
+}
+
+// Flat-shaded normal from the screen-space derivatives (dFdx, dFdy) of the
+// view-space position, flipped to face the viewer whatever the winding.
+vec3 facet_normal(vec3 dpdx, vec3 dpdy, vec3 view_dir) {
+	vec3 fn = normalize(cross(dpdx, dpdy));
+	return dot(fn, view_dir) < 0.0 ? -fn : fn;
+}
+
+// Aerial perspective for the close-up map: distant ground fades to sky blue.
+vec3 haze(vec3 col, vec3 view_pos) {
+	float f = (1.0 - exp(-length(view_pos) / 260.0)) * detail * 0.55;
+	return mix(col, vec3(0.62, 0.75, 0.92), f);
 }
 
 vec3 water_color(float depth, float tnow) {

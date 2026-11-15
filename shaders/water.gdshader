@@ -27,9 +27,23 @@ void fragment() {
 	depth = max(depth, 0.0);
 	vec3 d = normalize(v_dir);
 	float tnow = temp_now(v_tmean, v_tamp, d);
-	float ripple = vnoise(d * 900.0 + vec3(wall_time * 0.6, 0.0, wall_time * 0.4));
-	ALBEDO = water_color(depth, tnow) * (0.93 + 0.14 * ripple);
-	ALPHA = mix(0.72, 0.97, 1.0 - exp(-depth / 350.0));
-	ROUGHNESS = 0.25;
-	SPECULAR = 0.6;
+	float ice = 1.0 - smoothstep(-7.0, -2.5, tnow);
+	vec3 col = water_color(depth, tnow);
+
+	// Soft swell plus bands of surf rolling onto the shore.
+	float swell = fbm(d * 260.0 + vec3(wall_time * 0.15, 0.0, wall_time * 0.1));
+	col *= 0.9 + 0.2 * swell;
+	float shore = 1.0 - smoothstep(0.0, 110.0, depth);
+	float surf = sin(depth * 0.16 - wall_time * 1.4 + swell * 5.0) * 0.5 + 0.5;
+	float foam = shore * smoothstep(0.62, 0.95, surf) * (1.0 - ice);
+	col = mix(col, vec3(1.0), foam * 0.75);
+
+	// Fresnel: grazing views reflect the sky.
+	float fres = pow(1.0 - clamp(dot(normalize(NORMAL), VIEW), 0.0, 1.0), 4.0);
+	col = mix(col, vec3(0.70, 0.84, 0.97), fres * 0.5 * (1.0 - ice));
+
+	ALBEDO = haze(col, VERTEX);
+	ALPHA = clamp(mix(0.70, 0.97, 1.0 - exp(-depth / 350.0)) + foam * 0.3 + fres * 0.2, 0.0, 1.0);
+	ROUGHNESS = mix(0.12, 0.7, ice);
+	SPECULAR = 0.7;
 }

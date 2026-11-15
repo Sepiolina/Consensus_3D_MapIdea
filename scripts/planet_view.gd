@@ -9,11 +9,13 @@ extends Node3D
 const WorldGen = preload("res://scripts/world_gen.gd")
 
 const R := 100.0
-const HEIGHT_SCALE := 0.0004 # keep in sync with common.gdshaderinc
+const RELIEF_MAX := 3.6    # keep in sync with common.gdshaderinc
+const RELIEF_H0 := 2500.0
 const SEA_FLOOR := 1.0
-const SUB := 4               # subdivisions of each fan triangle
+const SUB := 6               # subdivisions of each fan triangle
 const BORDER_W := 0.035
 const MAX_TREES := 70
+const MAX_HOUSES := 26
 
 var world: WorldGen
 var detail := 0.0
@@ -27,6 +29,7 @@ var river_mat: ShaderMaterial
 var border_mat: ShaderMaterial
 var select_mat: ShaderMaterial
 var tree_mat: ShaderMaterial
+var house_mat: ShaderMaterial
 var cloud_mat: ShaderMaterial
 
 var globe: MeshInstance3D
@@ -34,6 +37,7 @@ var clouds: MeshInstance3D
 var cells_root: Node3D
 var selection: MeshInstance3D
 var tree_mesh: CylinderMesh
+var house_mesh: BoxMesh
 
 var loaded := {}       # cell index -> MeshInstance3D
 var queue: Array = []  # cell indices waiting to be built, nearest first
@@ -58,6 +62,7 @@ func setup(p_world: WorldGen) -> void:
 	border_mat = _new_mat("res://shaders/border.gdshader")
 	select_mat = _new_mat("res://shaders/border.gdshader")
 	tree_mat = _new_mat("res://shaders/tree.gdshader")
+	house_mat = _new_mat("res://shaders/house.gdshader")
 	cloud_mat = _new_mat("res://shaders/clouds.gdshader")
 	globe_mat.set_shader_parameter("data_tex", world.data_tex)
 	globe_mat.set_shader_parameter("mask_tex", world.mask_tex)
@@ -100,6 +105,11 @@ func setup(p_world: WorldGen) -> void:
 	tree_mesh.rings = 1
 	tree_mesh.cap_top = false
 
+	# A box with a middle ring of vertices; the shader pinches the top into a gable roof.
+	house_mesh = BoxMesh.new()
+	house_mesh.size = Vector3(0.11, 0.13, 0.15)
+	house_mesh.subdivide_height = 1
+
 
 ## Sets a uniform on every planet material (those without it ignore the call).
 func set_shared(param: String, value: Variant) -> void:
@@ -109,10 +119,9 @@ func set_shared(param: String, value: Variant) -> void:
 
 
 static func disp(h: float) -> float:
-	var d := h * HEIGHT_SCALE
 	if h >= 0.0:
-		return d
-	return -SEA_FLOOR * (1.0 - exp(d / SEA_FLOOR))
+		return RELIEF_MAX * (1.0 - exp(-h / RELIEF_H0))
+	return -SEA_FLOOR * (1.0 - exp(h * RELIEF_MAX / RELIEF_H0 / SEA_FLOOR))
 
 
 ## Rendered surface radius (land or sea surface) under planet-space direction `dir`.
@@ -261,8 +270,9 @@ func _build_cell(c: int) -> MeshInstance3D:
 				var wc := 1.0 - float(r) / SUB
 				var d := (pc * wc + pa * wa + pb * wb).normalized()
 				var dz: float = w.detail_noise.get_noise_3dv(d * WorldGen.NOISE_FREQ) * (rgc * wc + rga * wa + rgb * wb)
-				var h := hc * wc + ha * wa + hb * wb + dz
-				var t := tc * wc + ta * wa + tb * wb - 0.0065 * dz
+				var h_smooth := hc * wc + ha * wa + hb * wb
+				var h := WorldGen.level_height(h_smooth + dz)
+				var t := tc * wc + ta * wa + tb * wb - 0.0065 * (h - h_smooth)
 				tv.append(d * R)
 				tn.append(d)
 				tuv.append(Vector2(h / 10000.0, t / 50.0))
@@ -324,8 +334,8 @@ func _build_cell(c: int) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.extra_cull_margin = 6.0
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_add_trees(mi, c)
+	_add_houses(mi, c)
 	return mi
 
 
@@ -415,7 +425,46 @@ func _add_trees(parent: MeshInstance3D, c: int) -> void:
 	mmi.multimesh = mm
 	mmi.material_override = tree_mat
 	mmi.extra_cull_margin = 6.0
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	parent.add_child(mmi)
+
+
+## A small town of gabled houses clustered on one spot of every well-populated cell.
+func _add_houses(parent: MeshInstance3D, c: int) -> void:
+	var w := world
+	var count := int(w.pop[c] * MAX_HOUSES)
+	if count < 4:
+		return
+	var rng := RandomNumberGenerator.new()
+	rng.seed = w.seed_value * 53 + c
+	var corners: PackedInt32Array = w.cell_corner[c]
+	var pc: Vector3 = w.sites[c]
+	var toward: Vector3 = w.corner_pos[corners[rng.randi() % corners.size()]]
+	var centre := pc.lerp(toward, rng.randf_range(0.15, 0.5)).normalized()
+	var ax := centre.cross(Vector3.UP if absf(centre.y) < 0.9 else Vector3.RIGHT).normalized()
+	var az := ax.cross(centre)
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_custom_data = true
+	mm.mesh = house_mesh
+	mm.instance_count = count
+	for k in count:
+		var ang := rng.randf() * TAU
+		var dist := sqrt(rng.randf()) * 0.55
+		var d := (centre * R + ax * cos(ang) * dist + az * sin(ang) * dist).normalized()
+		w.sample(d, c)
+		var h := w.s_h
+		if h > 2500.0:
+			h = -99999.0 # hidden by the shader
+		var yaw := rng.randf() * TAU
+		var x := (ax * cos(yaw) + az * sin(yaw))
+		x = (x - d * x.dot(d)).normalized()
+		mm.set_instance_transform(k, Transform3D(Basis(x, d, x.cross(d)), d * R))
+		var hemi := clampf(d.y * 6.0, -1.0, 1.0)
+		mm.set_instance_custom_data(k, Color(h / 10000.0, w.s_t / 50.0, w.s_a * hemi / 50.0, rng.randf()))
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.material_override = house_mat
+	mmi.extra_cull_margin = 6.0
 	parent.add_child(mmi)
 
 
