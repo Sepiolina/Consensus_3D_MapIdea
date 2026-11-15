@@ -25,4 +25,8 @@ Each file is the twin of a Godot script, with the same steps, names and units:
 
 Tuning made here that the Godot side does not have yet: sharper terrace steps
 (`LEVEL_RAMP` 0.05, `SUB` 8, `RELIEF_MAX` 5.0), per-level tones, grassy banks with rock
-only on multi-level drops, cloud shadows, and the deeper colour palette.
+only on multi-level drops, cloud shadows, the deeper colour palette, the sea-green
+shelf in `water_color`, and the close-up ground texture (`ground_detail`: scrub clumps,
+dry patches, rock outcrops, field patchwork, grain and a bumped normal). `ground_detail`
+takes the pixel footprint (`length(fwidth(v_wpos))`) to fade out detail finer than a
+pixel; in Godot that is `fwidth(VERTEX)` in the fragment shader.
