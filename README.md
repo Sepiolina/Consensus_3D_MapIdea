@@ -5,6 +5,10 @@ solar system down to individual map cells. No texture, model or scene assets —
 repository is only GDScript and shader source; everything else is generated at run time
 from one seed.
 
+> **Web POC first.** `web/` holds a browser version of the same design, used to tune the
+> look and the algorithms where they can be run and seen quickly. It is currently ahead of
+> the Godot project; `web/README.md` maps each file to its Godot twin.
+
 ## Run
 
 Open the folder with **Godot 4.3 or newer** and press Play (`main.tscn`), or:
