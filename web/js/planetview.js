@@ -16,7 +16,7 @@
 	const R = 100.0;
 	const RELIEF_MAX = 5.0, RELIEF_H0 = 2500.0, SEA_FLOOR = 1.0; // keep in sync with COMMON
 	const LOD_SUB = [40, 16, 8];     // subdivisions of each fan triangle, per level of detail
-	const RISER_W = [0.26, 0.62, 1.2]; // minimum cliff-wall width (world units) per level: the steep part then spans 1.5+ vertex rows
+	const RISER_W = [0.21, 0.5, 1.0]; // minimum cliff-wall width (world units) per level: about 1.9x its vertex spacing
 	const LOD_RAD = [0.11, 0.22];    // angular distance from the focus where LOD 0 and LOD 1 end
 	const LOD_HYST = 0.02;           // extra distance before a cell is coarsened again
 	const VEG_LOD = 1;               // cells at this LOD or finer carry trees and rocks
@@ -365,7 +365,9 @@
 
 			if (w.hasRiver[c]) this._addRivers(c, add);
 			yield;
-			const veg = lod <= VEG_LOD && w.elev[c] > -500 ? this._placeVegetation(c, lod, out, idx, nGridTri) : null;
+			const wantVeg = lod <= VEG_LOD && w.elev[c] > -500;
+			if (wantVeg && !this.vegPlans.has(c)) yield* this._vegPlanGen(c);
+			const veg = wantVeg ? this._placeVegetation(c, lod, out) : null;
 			return { group, lod, terrain, border, veg };
 		}
 
@@ -411,7 +413,7 @@
 		_initVegetation() {
 			const THREE = window.THREE;
 			const G = POC.vegGeometry;
-			this.vegCells = new Map(); this.vegDirty = false; this._vegTime = 0;
+			this.vegCells = new Map(); this.vegPlans = new Map(); this.vegDirty = false; this._vegTime = 0;
 			// [name, geometry, leaf colour, wood colour, kind id, global instance cap]
 			const kinds = [
 				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 2600],
@@ -421,8 +423,7 @@
 				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3, 3000],
 				["shrub", G.shrub(9), [0.20, 0.22, 0.09], [0.22, 0.16, 0.10], 4, 7000],
 				["tuft", G.tuft(4), [0.40, 0.36, 0.15], [0.40, 0.34, 0.16], 5, 20000],
-				["rock0", G.rock(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 2500],
-				["rock1", G.rock(29, 0), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 4000],
+				["boulder", G.boulder(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 4000],
 				["snag", G.snag(17), [0.2, 0.2, 0.1], [0.36, 0.30, 0.24], 7, 1500],
 				["blob", G.blob(), [0, 0, 0], [0, 0, 0], 8, 14000],
 			];
@@ -477,107 +478,262 @@
 			});
 		}
 
-		// Scatters trees, shrubs, grass tufts and rocks over the cell's triangles.
-		// Suitability comes from the vertex data already computed for the mesh (slope,
-		// AO, moisture, temperature, mesa, gullies, river distance) and clustered noise;
-		// positions are interpolated on the rendered triangles, so nothing floats.
-		_placeVegetation(c, lod, out, idx, nTri) {
-			const w = this.world, n3 = w.sn, rng = new POC.RNG(w.seed * 31 + c * 7 + 1);
-			const lists = this.vegKinds.map(() => []);
-			const K = this.kindIndex;
-			const fine = lod === 0;
-			const pt = { d: [0, 0, 0] };
-			const interp = () => {
-				const t = Math.floor(rng.randf() * nTri) * 3, i0 = idx[t], i1 = idx[t + 1], i2 = idx[t + 2];
-				let a = rng.randf(), b = rng.randf();
-				if (a + b > 1) { a = 1 - a; b = 1 - b; }
-				const g = 1 - a - b;
-				const L = (arr, s, k) => arr[i0 * s + k] * g + arr[i1 * s + k] * a + arr[i2 * s + k] * b;
-				const d = norm([L(out.pos, 3, 0), L(out.pos, 3, 1), L(out.pos, 3, 2)]);
-				pt.d = d;
-				// Height on the flat triangle between the displaced vertices.
-				const rr = g * disp(out.data[i0 * 4]) + a * disp(out.data[i1 * 4]) + b * disp(out.data[i2 * 4]);
-				const hi = L(out.data, 4, 0);
-				pt.h = hi;
-				pt.rr = rr;
-				pt.t = L(out.data, 4, 1); pt.amp = L(out.data, 4, 2); pt.p = L(out.data, 4, 3);
-				const nx = L(out.nrm, 4, 0), ny = L(out.nrm, 4, 1), nz = L(out.nrm, 4, 2);
-				pt.up = (nx * d[0] + ny * d[1] + nz * d[2]) / (Math.hypot(nx, ny, nz) || 1);
-				pt.ao = L(out.nrm, 4, 3);
-				pt.mesa = L(out.surf, 4, 0); pt.gully = L(out.surf, 4, 1); pt.curv = L(out.surf, 4, 2);
-				pt.rivD = Math.min(out.surf[i0 * 4 + 3], out.surf[i1 * 4 + 3], out.surf[i2 * 4 + 3]);
-				pt.warm = clamp((L(out.col, 4, 0) - L(out.col, 4, 2)) * 4 + 0.2, 0, 1);
-				return pt;
+		// Vegetation and boulders are planned once per cell from the surface function
+		// (position, height, slope from the surface normal, river and cliff distances),
+		// seeded by the cell id, so the plan is the same at every level of detail and
+		// cached. Each level then shows a fixed subset (by instance rank) with heights
+		// snapped to its own drawn triangles, so nothing floats, sinks or moves.
+		//
+		// Candidates: per kind, a fully jittered grid in the cell's tangent plane taken
+		// in random order (stratified, then thinned: blue-noise-like, no rows), a cheap
+		// noise pre-pass (groves and clearings) before any surface() call, then hard
+		// exclusions and a minimum spacing that varies with a low-frequency field.
+		_vegPlan(c) {
+			const hit = this.vegPlans.get(c);
+			if (hit) return hit;
+			const it = this._vegPlanGen(c);
+			let r;
+			do { r = it.next(); } while (!r.done);
+			return r.value;
+		}
+		// Generator (yields every few dozen surface samples, so a cell build stays
+		// within the per-frame budget).
+		*_vegPlanGen(c) {
+			let work = 0;
+			const tick = () => (++work & 31) === 0;
+			const w = this.world, n3 = w.sn, K = this.kindIndex, rng = new POC.RNG((w.seed * 7919 + c * 104729 + 17) | 0);
+			const pc = w.sites[c], [t1, t2] = tangentBasis(pc);
+			let rad = 0;
+			for (const k of w.cellCorner[c]) rad = Math.max(rad, Math.acos(clamp(dot(pc, w.cornerPos[k]), -1, 1)));
+			const cosRad = Math.cos(rad), radU = rad * R, cellWet = smoothstep(220, 1500, w.precip[c]), hasRiv = w.riverNear[c].length > 0;
+			const plan = this.vegKinds.map(() => []);
+			// Grid hash of accepted instances per spacing class, in tangent-plane units.
+			const HC = 0.1, hash = [new Map(), new Map(), new Map(), new Map()];
+			const near = (cls, u, v, r) => {
+				const H = hash[cls], i0 = Math.floor((u - r) / HC), i1 = Math.floor((u + r) / HC), j0 = Math.floor((v - r) / HC), j1 = Math.floor((v + r) / HC);
+				for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+					const L = H.get(i * 4096 + j);
+					if (L) for (let k = 0; k < L.length; k += 2) if ((L[k] - u) ** 2 + (L[k + 1] - v) ** 2 < r * r) return true;
+				}
+				return false;
 			};
-			// Exact height for an instance that sits on the drawn triangle: invert disp().
-			const heightOn = (rr) => (rr >= 0 ? -RELIEF_H0 * Math.log(Math.max(1 - rr / RELIEF_MAX, 1e-6)) : -99999);
-			const BLOB_R = { [K.broad0]: 0.09, [K.broad1]: 0.08, [K.conifer]: 0.07, [K.acacia]: 0.11, [K.palm]: 0.06, [K.shrub]: 0.045, [K.rock0]: 0.06, [K.rock1]: 0.06, [K.snag]: 0.04 };
-			const push = (kind, p, scale, lean, extra) => {
-				const hemi = clamp(p.d[1] * 6, -1, 1);
-				const h = p.h < 15 ? -99999 : heightOn(p.rr);
-				lists[kind].push(p.d[0], p.d[1], p.d[2], h, rng.randf() * 6.2832, scale, lean, rng.randf(), p.t, p.amp * hemi, p.ao, extra);
-				// Soft contact shadow under everything that stands on the ground.
-				const r = BLOB_R[kind];
-				if (r && fine) lists[K.blob].push(p.d[0], p.d[1], p.d[2], h, 0, scale * r, 0, 0.5, p.t, 0, p.ao, 0);
+			const mark = (cls, u, v) => { const key = Math.floor(u / HC) * 4096 + Math.floor(v / HC), H = hash[cls]; let L = H.get(key); if (!L) H.set(key, (L = [])); L.push(u, v); };
+			// Candidates for one kind: jittered grid of spacing g, shuffled.
+			// pmax: an upper bound of the kind's acceptance in this cell; points are
+			// thinned by it before any work (the loops then accept with pre / pmax).
+			const cands = (g, pmax) => {
+				const n = Math.ceil((2 * radU) / g), list = [];
+				for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+					const u = (i + rng.randf()) * g - radU, v = (j + rng.randf()) * g - radU;
+					if (rng.randf() > pmax) continue;
+					if (u * u + v * v > radU * radU) continue;
+					const d = norm([pc[0] + (t1[0] * u + t2[0] * v) / R, pc[1] + (t1[1] * u + t2[1] * v) / R, pc[2] + (t1[2] * u + t2[2] * v) / R]);
+					if (dot(d, pc) < cosRad || w.locate(d, c) !== c) continue;
+					list.push([u, v, d]);
+				}
+				for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(rng.randf() * (i + 1)), t = list[i]; list[i] = list[j]; list[j] = t; }
+				return list;
 			};
-			const area = (fine ? 1 : 1) * 1.0;
-			// Trees.
-			const nTreeCand = Math.round(1300 * area);
-			for (let k = 0; k < nTreeCand; k++) {
-				const p = interp(), d = p.d;
-				if (p.h < 25 || p.up < 0.86 || p.rivD < 1.35 || p.t < -5 || p.h > 3300) continue;
-				const wet = smoothstep(220, 1500, p.p);
-				const clump = n3(d[0] * 55 + 3.1, d[1] * 55 + 7.7, d[2] * 55 + 1.3) + 0.5 * n3(d[0] * 150 + 9.2, d[1] * 150 + 2.4, d[2] * 150 + 6.6);
-				const riparian = p.rivD < 4.5 ? (1 - wet) * 0.3 : 0;
-				let dens = 1.5 * Math.pow(wet, 1.6) * smoothstep(-0.25, 0.25, clump) + riparian * smoothstep(-0.3, 0.2, clump) + 0.008;
-				dens *= 1 - 0.7 * p.mesa * smoothstep(0.95, 0.85, p.up);
-				if (!fine) dens *= 0.14;
-				if (rng.randf() > dens) continue;
+			// Groves and clearings: warped two-octave noise, so patches differ in size and
+			// shape instead of repeating one blob; plus a slow field for spacing.
+			const groveF = (d) => {
+				const wq = 0.35 * n3(d[0] * 21 + 4.4, d[1] * 21 + 1.3, d[2] * 21 + 7.9);
+				return n3(d[0] * 48 + wq + 3.1, d[1] * 48 - wq + 7.7, d[2] * 48 + wq + 1.3) + 0.45 * n3(d[0] * 131 + 9.2, d[1] * 131 + 2.4, d[2] * 131 + 6.6);
+			};
+			const slowF = (d) => 0.5 + 0.5 * n3(d[0] * 17 + 5.5, d[1] * 17 + 0.5, d[2] * 17 + 3.3);
+			// Full sample: surface data and the slope (degrees, displaced space) from the
+			// surface normal over a fixed 0.06-unit step.
+			const S = {};
+			const sample = (d) => {
+				w.surface(d, c, 1);
+				Object.assign(S, { d, G: w.sG, h: w.sH, t: w.sT, amp: w.sA, p: w.sP, mesa: w.sMesa, gully: w.sGully, mtn: w.sMtn, rivX: w.sRivX, rivHW: w.sRivHW, rivL: w.sRivL, risD: w.sRisD, risHW: w.sRisHW, risH: w.sRisH });
+				// Only risers that are real walls (mean slope over ~25 deg in the drawn,
+				// displaced relief) count as cliffs; wide gentle ones are just slopes.
+				S.wall = S.risHW > 0 && (S.risH * 0.0018) / (2 * S.risHW) > 0.45;
+				S.cliff = S.wall ? Math.abs(S.risD) - S.risHW : 99; // distance beyond the riser (world units)
+				S.dry = S.rivHW > 0 ? S.rivX : 99;                         // distance from the channel edge
+				S.wet = smoothstep(220, 1500, S.p);
+				return S;
+			};
+			// Slope (degrees, displaced space) from the surface normal over a 0.06-unit
+			// step; evaluated last, only for points that passed everything else.
+			const slopeOf = (S) => {
+				const d = S.d, [e1, e2] = tangentBasis(d), eps = 0.0006, r0 = R + disp(S.h);
+				w.gHold = S.G;
+				const d1 = norm([d[0] + e1[0] * eps, d[1] + e1[1] * eps, d[2] + e1[2] * eps]); w.surface(d1, c, 1); const r1 = R + disp(w.sH);
+				const d2 = norm([d[0] + e2[0] * eps, d[1] + e2[1] * eps, d[2] + e2[2] * eps]); w.surface(d2, c, 1); const r2 = R + disp(w.sH);
+				w.gHold = 0;
+				const ax = d1[0] * r1 - d[0] * r0, ay = d1[1] * r1 - d[1] * r0, az = d1[2] * r1 - d[2] * r0;
+				const bx = d2[0] * r2 - d[0] * r0, by = d2[1] * r2 - d[1] * r0, bz = d2[2] * r2 - d[2] * r0;
+				const nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+				return (Math.acos(clamp(Math.abs(nx * d[0] + ny * d[1] + nz * d[2]) / (Math.hypot(nx, ny, nz) || 1), 0, 1)) * 180) / Math.PI;
+			};
+			const push = (kind, d, s, scale, lean, extra) => {
+				const hemi = clamp(d[1] * 6, -1, 1);
+				plan[kind].push(d[0], d[1], d[2], s.h, rng.randf() * 6.2832, scale, lean, rng.randf(), s.t, s.amp * hemi, 1, extra);
+			};
+
+			// Trees. Exclusions: slope <= 22 deg; 0.15 units clear of any riser (rim and
+			// foot); the channel plus a bank margin of 0.14 + 1.1 half widths; dry land
+			// 20 m above the sea and 6 m above the river. Riparian band just beyond that.
+			const treeMax = Math.min(1, (0.006 + 0.55 * Math.pow(cellWet, 1.5) + (hasRiv ? 0.15 : 0)) * 1.3);
+			for (const [u, v, d] of cands(0.06, treeMax)) {
+				const g = groveF(d), clearing = smoothstep(-0.2, 0.3, g);
+				const pre = Math.min(1, (0.006 + 0.55 * Math.pow(cellWet, 1.5) * clearing + (hasRiv ? 0.15 : 0)) * 1.3);
+				if (rng.randf() * treeMax > pre) continue;
+				const sp = 0.085 + 0.1 * slowF(d) * (0.6 + 0.4 * (1 - clearing));
+				if (near(0, u, v, sp)) continue;
+				// Cheap river test first: no tree in the channel or on the bank shelf, and
+				// the riparian share of `pre` only applies near a river.
+				const rx = hasRiv ? w.riverEdgeDist(d, c) : 99;
+				if (rx < 0.14 || (rx > 1.2 && rng.randf() * pre > pre - (hasRiv ? 0.15 * 1.3 : 0))) continue;
+				if (tick()) yield;
+				const s = sample(d);
+				if (s.h < 20 || s.h > 3300 || s.t < -5 || s.cliff < 0.15 || s.h < s.rivL + 6) continue;
+				const bank = 0.14 + 1.1 * s.rivHW;
+				if (s.dry < bank) continue;
+				const riparian = s.dry < bank + 0.55 ? 0.12 + 0.2 * (1 - s.wet) : 0;
+				const dens = 0.006 + 0.55 * Math.pow(s.wet, 1.5) * clearing + riparian * smoothstep(-0.5, 0.1, g);
+				if (rng.randf() * pre > dens || slopeOf(s) > 22) continue;
 				let kind;
-				const tm = p.t;
-				if (tm < 5 || (tm < 9 && rng.randf() < 0.5) || (p.h > 1600 && rng.randf() < 0.6)) kind = K.conifer;
-				else if (tm > 21 && p.p > 1300 && p.h < 300 && rng.randf() < 0.22) kind = K.palm;
-				else if (tm > 16 && p.p < 1100 && rng.randf() < 0.75) kind = K.acacia;
+				const tm = s.t;
+				if (tm < 5 || (tm < 9 && rng.randf() < 0.5) || (s.h > 1600 && rng.randf() < 0.6)) kind = K.conifer;
+				else if (tm > 21 && s.p > 1300 && s.h < 300 && rng.randf() < 0.22) kind = K.palm;
+				else if (tm > 16 && s.p < 1100 && rng.randf() < 0.75) kind = K.acacia;
 				else kind = rng.randf() < 0.5 ? K.broad0 : K.broad1;
-				if (wet < 0.35 && rng.randf() < 0.12) kind = K.snag; // a few dead trees in dry country
-				push(kind, p, 0.7 + 0.65 * rng.randf(), (rng.randf() - 0.5) * 0.16, wet);
+				if (s.wet < 0.35 && rng.randf() < 0.1) kind = K.snag;
+				// Bigger, older trees inside groves; smaller at their edges and alone.
+				push(kind, d, s, (0.62 + 0.45 * clearing) * (0.85 + 0.35 * rng.randf()), (rng.randf() - 0.5) * 0.14, s.wet);
+				mark(0, u, v);
 			}
-			// Rocks and boulders: cliff feet, steep slopes, gullies, dry country.
-			const nRockCand = Math.round((fine ? 420 : 120) * area);
-			for (let k = 0; k < nRockCand; k++) {
-				const p = interp(), d = p.d;
-				if (p.h < 5 || p.up < 0.55 || p.rivD < 1.1) continue;
-				const dry = 1 - smoothstep(300, 1400, p.p);
-				const foot = (1 - smoothstep(0.55, 0.9, p.ao)) * smoothstep(0.99, 0.8, p.up);
-				const clump = n3(d[0] * 120 + 5.5, d[1] * 120 + 1.5, d[2] * 120 + 8.5);
-				let dens = 0.004 + 0.8 * foot * (0.3 + 0.7 * p.mesa) + 0.12 * p.gully * dry + 0.08 * dry * smoothstep(0.2, 0.6, clump) + 0.12 * smoothstep(0.97, 0.85, p.up);
-				if (!fine) dens = foot > 0.4 ? dens : 0;
-				if (rng.randf() > dens) continue;
+			// Shrubs: groves' edges, hollows and banks; looser limits.
+			const shrubMax = Math.min(1, 0.025 + 0.15 * cellWet + (hasRiv ? 0.12 : 0));
+			for (const [u, v, d] of cands(0.06, shrubMax)) {
+				const g = groveF(d), edge = 1 - Math.abs(smoothstep(-0.4, 0.5, g) * 2 - 1);
+				const pre = Math.min(1, 0.025 + 0.15 * cellWet * (0.4 + 0.6 * edge) + (hasRiv ? 0.12 : 0));
+				if (rng.randf() * shrubMax > pre) continue;
+				const sp = 0.045 + 0.04 * slowF(d);
+				if (near(1, u, v, sp) || near(0, u, v, 0.05)) continue;
+				const rx = hasRiv ? w.riverEdgeDist(d, c) : 99;
+				if (rx < 0.07 || (rx > 0.8 && rng.randf() * pre > pre - (hasRiv ? 0.12 : 0))) continue;
+				if (tick()) yield;
+				const s = sample(d);
+				if (s.h < 15 || s.h > 2300 || s.t < -3 || s.cliff < 0.06 || s.h < s.rivL + 3) continue;
+				const bank = 0.07 + 0.6 * s.rivHW;
+				if (s.dry < bank) continue;
+				const dens = (0.02 + 0.14 * s.wet) * (0.4 + 0.6 * edge) + (s.dry < bank + 0.4 ? 0.12 : 0);
+				if (rng.randf() * pre > dens || slopeOf(s) > 32) continue;
+				push(K.shrub, d, s, 0.6 + 0.9 * rng.randf(), (rng.randf() - 0.5) * 0.2, s.wet);
+				mark(1, u, v);
+			}
+			// Grass tufts: dry grassland and steppe, off banks and walls.
+			const tuftMax = Math.min(1, (0.75 - 0.5 * cellWet) * smoothstep(80, 300, w.precip[c])) * 0.2;
+			for (const [u, v, d] of cands(0.06, tuftMax)) {
+				const tg = n3(d[0] * 200 + 7.3, d[1] * 200 + 3.9, d[2] * 200 + 5.1) + 0.5 * n3(d[0] * 61 + 1.7, d[1] * 61 + 8.3, d[2] * 61 + 2.9);
+				if (rng.randf() > smoothstep(-0.35, 0.35, tg)) continue;
+				if (near(2, u, v, 0.03)) continue;
+				if (tick()) yield;
+				const s = sample(d);
+				if (s.h < 22 || s.h > 2300 || s.t < -3 || s.cliff < 0.04 || s.dry < 0.12 + 0.8 * s.rivHW || s.h < s.rivL + 3) continue;
+				if (rng.randf() * tuftMax > (0.75 - 0.55 * s.wet) * smoothstep(80, 300, s.p) * 0.2 || slopeOf(s) > 30) continue;
+				push(K.tuft, d, s, 1.1 + 1.0 * rng.randf(), (rng.randf() - 0.5) * 0.3, s.wet);
+				mark(2, u, v);
+			}
+			// Boulders: talus at cliff feet (largest, cliff-chunk size), along rims,
+			// river banks, mountain scree and gullies; a few anywhere in dry country.
+			// Coloured like the local rock (extra = redness, as in terrainFrag).
+			// Two levels: a coarse jittered grid finds the zones (foot, rim, bank, scree,
+			// gully); only there are a few nearby candidates sampled. Elsewhere a rare
+			// lone boulder in dry country.
+			const rocky = hasRiv || w.mesaP[c] > 0.05 || w.rug[c] > 200;
+			const dryc = (s) => 1 - smoothstep(300, 1400, s.p);
+			const zoneOf = (s) => {
+				const foot = s.wall && s.risH > 70 && s.risD < -s.risHW * 0.55 && s.risD > -s.risHW - 0.45 ? 1 : 0;
+				const rimz = s.wall && s.risH > 70 && s.risD > s.risHW * 0.75 && s.risD < s.risHW + 0.12 ? 1 : 0;
+				const bankz = s.rivHW > 0 && s.dry < 0.12 + 0.9 * s.rivHW ? 1 : 0;
+				const scree = smoothstep(0.25, 0.6, s.mtn); // mountain flanks (slope is checked at placement)
+				return { foot, rimz, bankz, scree, any: foot + rimz + bankz + scree > 0.3 || s.gully * dryc(s) > 0.85 };
+			};
+			const placeBoulder = (u, v, d, s, z, dens) => {
+				if (s.h < 3 || s.dry < 0.01 || s.h < s.rivL + 1 || rng.randf() > dens) return;
+				const sl = slopeOf(s);
+				if (sl > 52 || (z.scree > 0 && !z.foot && !z.bankz && sl < 12)) return;
 				const big = rng.randf();
-				push(rng.randf() < 0.5 ? K.rock0 : K.rock1, p, (fine ? 0.5 : 0.9) + 1.6 * big * big * (0.4 + foot), (rng.randf() - 0.5) * 0.5, p.warm);
-			}
-			if (fine) {
-				// Shrubs: everywhere vegetated, clustered, denser by water.
-				for (let k = 0; k < 900; k++) {
-					const p = interp(), d = p.d;
-					if (p.h < 18 || p.h > 2300 || p.up < 0.8 || p.rivD < 1.3 || p.t < -3) continue;
-					const wet = smoothstep(150, 1300, p.p);
-					const clump = n3(d[0] * 90 + 1.9, d[1] * 90 + 6.1, d[2] * 90 + 3.3) + 0.6 * n3(d[0] * 260 + 4.4, d[1] * 260 + 8.8, d[2] * 260 + 2.2);
-					const dens = (0.1 + 0.55 * wet) * smoothstep(-0.3, 0.4, clump) + (p.rivD < 5 ? 0.55 : 0) + 0.35 * smoothstep(0.05, 0.4, p.curv);
-					if (rng.randf() > dens) continue;
-					push(K.shrub, p, 0.6 + 0.9 * rng.randf(), (rng.randf() - 0.5) * 0.2, wet);
-				}
-				// Grass tufts: dry grassland and steppe.
-				for (let k = 0; k < 2600; k++) {
-					const p = interp(), d = p.d;
-					if (p.h < 22 || p.h > 2300 || p.up < 0.85 || p.rivD < 2.2 || p.t < -3) continue;
-					const wet = smoothstep(150, 1300, p.p);
-					const clump = n3(d[0] * 200 + 7.3, d[1] * 200 + 3.9, d[2] * 200 + 5.1);
-					const dens = (0.75 - 0.55 * wet) * smoothstep(-0.2, 0.3, clump) * smoothstep(80, 300, p.p);
-					if (rng.randf() > dens) continue;
-					push(K.tuft, p, 1.1 + 1.0 * rng.randf(), (rng.randf() - 0.5) * 0.3, wet);
+				let scale = z.foot ? 1.2 + 3.8 * big * big * smoothstep(60, 220, s.risH) + 0.6 * big : z.bankz ? 0.7 + 1.3 * big : 0.6 + 1.6 * big * big;
+				if (z.rimz) scale *= 0.8;
+				if (near(3, u, v, 0.03 + 0.055 * scale)) return;
+				const warmDry = smoothstep(6, 16, s.t) * (1 - smoothstep(700, 1900, s.p));
+				const red = clamp(warmDry * 0.85 + s.mesa * 0.35, 0, 1) * (1 - smoothstep(1800, 3000, s.h) * 0.7) * (1 - Math.max(smoothstep(1700, 2500, s.h), 1 - smoothstep(-6, 1, s.t)));
+				push(K.boulder, d, s, scale, (rng.randf() - 0.5) * 0.6, red);
+				mark(3, u, v);
+			};
+			for (const [u0, v0, d0] of cands(0.3, rocky ? 1 : 0.12)) {
+				if (tick()) yield;
+				let s = sample(d0), z = zoneOf(s);
+				const dc = dryc(s);
+				if (!z.any) { placeBoulder(u0, v0, d0, s, z, 0.008 * dc); continue; }
+				for (let k = 0; k < 4; k++) {
+					const a = rng.randf() * 6.2832, rr = 0.18 * Math.sqrt(rng.randf()), u = u0 + Math.cos(a) * rr, v = v0 + Math.sin(a) * rr;
+					const d = norm([pc[0] + (t1[0] * u + t2[0] * v) / R, pc[1] + (t1[1] * u + t2[1] * v) / R, pc[2] + (t1[2] * u + t2[2] * v) / R]);
+					if (w.locate(d, c) !== c) continue;
+					s = sample(d); z = zoneOf(s);
+					placeBoulder(u, v, d, s, z, 0.005 * dc + 0.75 * z.foot + 0.15 * z.rimz + 0.25 * z.bankz + 0.3 * z.scree + 0.04 * s.gully * dc);
 				}
 			}
+			const out = plan.map((l) => Float32Array.from(l));
+			this.vegPlans.set(c, out);
+			if (this.vegPlans.size > 900) this.vegPlans.delete(this.vegPlans.keys().next().value); // bounded cache
+			return out;
+		}
+
+		// The cell's plan at one level of detail: a fixed subset by instance rank, heights
+		// snapped to the drawn grid of that level (barycentric in the fan triangle), AO
+		// from the nearest vertex, contact-shadow discs at the finest level only.
+		_placeVegetation(c, lod, out) {
+			const w = this.world, K = this.kindIndex, plan = this._vegPlan(c), SUB = LOD_SUB[lod];
+			const corners = w.cellCorner[c], m = corners.length, pc = w.sites[c], rowLen = ((SUB + 1) * (SUB + 2)) / 2;
+			// Inverse of [site, corner a, corner b] per fan triangle.
+			const inv = [];
+			for (let i = 0; i < m; i++) {
+				const a = pc, b = w.cornerPos[corners[i]], d = w.cornerPos[corners[(i + 1) % m]];
+				const c0 = cross(b, d), c1 = cross(d, a), c2 = cross(a, b), det = dot(a, c0);
+				inv.push([c0, c1, c2, det]);
+			}
+			const vh = (i, r, s) => disp(out.data[(i * rowLen + (r * (r + 1)) / 2 + s) * 4]);
+			const drawn = (d) => {
+				let bi = 0, bw = null, bmin = -1e9;
+				for (let i = 0; i < m; i++) {
+					const [c0, c1, c2, det] = inv[i], x = dot(d, c0) / det, y = dot(d, c1) / det, z = dot(d, c2) / det, sum = x + y + z, mn = Math.min(x, y, z) / sum;
+					if (mn > bmin) { bmin = mn; bi = i; bw = [x / sum, y / sum, z / sum]; }
+				}
+				const Rf = clamp((1 - bw[0]) * SUB, 0, SUB), Sf = clamp(bw[2] * SUB, 0, Rf);
+				const r0 = Math.min(Math.floor(Rf), SUB - 1), s0 = Math.min(Math.floor(Sf), r0), fx = Rf - r0, fy = clamp(Sf - s0, 0, 1);
+				const rr = fy <= fx ? (1 - fx) * vh(bi, r0, s0) + (fx - fy) * vh(bi, r0 + 1, s0) + fy * vh(bi, r0 + 1, s0 + 1)
+					: (1 - fy) * vh(bi, r0, s0) + fx * vh(bi, r0 + 1, s0 + 1) + (fy - fx) * vh(bi, r0, Math.min(s0 + 1, r0));
+				const ao = out.nrm[(bi * rowLen + (Math.round(Rf) * (Math.round(Rf) + 1)) / 2 + Math.min(Math.round(Sf), Math.round(Rf))) * 4 + 3];
+				return [rr >= 0 ? -RELIEF_H0 * Math.log(Math.max(1 - rr / RELIEF_MAX, 1e-6)) : -99999, ao];
+			};
+			// Share of each kind kept at this level (by rank = iparam.w).
+			const keep = (ki, scale, rank) => {
+				if (lod === 0) return true;
+				if (ki === K.tuft) return false;
+				if (ki === K.shrub) return rank < 0.12;
+				if (ki === K.boulder) return scale > 1.6 || rank < 0.25;
+				return rank < 0.35;
+			};
+			const BLOB_R = { [K.broad0]: 0.09, [K.broad1]: 0.08, [K.conifer]: 0.07, [K.acacia]: 0.11, [K.palm]: 0.06, [K.shrub]: 0.045, [K.boulder]: 0.055, [K.snag]: 0.04 };
+			const lists = plan.map(() => []);
+			plan.forEach((a, ki) => {
+				for (let i = 0; i < a.length; i += 12) {
+					if (!keep(ki, a[i + 5], a[i + 7])) continue;
+					const d = [a[i], a[i + 1], a[i + 2]], [h, ao] = drawn(d);
+					const L = lists[ki], o = L.length;
+					for (let k = 0; k < 12; k++) L.push(a[i + k]);
+					L[o + 3] = a[i + 3] < 15 && ki !== K.boulder ? -99999 : h; L[o + 10] = ao;
+					const br = BLOB_R[ki];
+					if (br && lod === 0) lists[K.blob].push(d[0], d[1], d[2], L[o + 3], 0, a[i + 5] * br, 0, 0.5, a[i + 8], 0, ao, 0);
+				}
+			});
 			return lists.map((l) => Float32Array.from(l));
 		}
 

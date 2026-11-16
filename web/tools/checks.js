@@ -45,32 +45,43 @@ if (want("cliffs")) for (const lod of [0, 1]) {
 }
 
 if (want("veg")) {
-	const K = view.kindIndex, names = Object.keys(K), eps = 0.0004;
-	const cells = mesaCells.slice(0, 3); for (let c = 0; c < w.nCells && cells.length < 8; c++) if (w.hasRiver[c] && w.precip[c] > 700 && w.elev[c] < 1200) cells.push(c);
-	const stat = {};
+	// Every instance against the surface: slope (degrees, displaced space, from the
+	// surface normal), distance beyond the channel edge in river half widths and in
+	// world units, distance beyond the nearest riser (rim or foot), under water, and a
+	// nearest-neighbour spacing histogram per class. Also: does a cell carry the same
+	// instances (positions) at LOD0 and LOD1 (LOD1 a subset)?
+	const K = view.kindIndex, names = Object.keys(K), eps = 0.0006;
+	const cells = mesaCells.slice(0, 4); for (let c = 0; c < w.nCells && cells.length < 10; c++) if (w.hasRiver[c] && w.precip[c] > 700 && w.elev[c] < 1200) cells.push(c);
+	const stat = {}; let subsetOK = 0, subsetBad = 0;
 	for (const c of cells) {
 		const e = build(c, 0); if (!e.veg) continue;
+		const e1v = build(c, 1).veg;
 		e.veg.forEach((arr, ki) => {
 			const name = names.find((n) => K[n] === ki); if (name === "blob") return;
-			const cls = /rock/.test(name) ? "rock" : name === "shrub" ? "shrub" : name === "tuft" ? "tuft" : "tree";
-			const s = (stat[cls] = stat[cls] || { n: 0, slope: [], rivD: [], inChannel: 0, onRiser: 0, under: 0, off: [], nn: [] });
+			const key = (a, i) => a[i].toFixed(6) + "," + a[i + 1].toFixed(6) + "," + a[i + 2].toFixed(6);
+			const set0 = new Set(); for (let i = 0; i < arr.length; i += 12) set0.add(key(arr, i));
+			const a1 = e1v ? e1v[ki] : []; for (let i = 0; i < a1.length; i += 12) { if (set0.has(key(a1, i))) subsetOK++; else subsetBad++; }
+			const cls = /rock|boulder/.test(name) ? "boulder" : name === "shrub" ? "shrub" : name === "tuft" ? "tuft" : "tree";
+			const s = (stat[cls] = stat[cls] || { n: 0, slope: [], chanX: [], chanHW: [], cliff: [], under: 0, inChannel: 0, nn: [] });
 			const pts = [];
 			for (let i = 0; i < arr.length; i += 12) {
 				const d = [arr[i], arr[i + 1], arr[i + 2]], h = arr[i + 3]; if (h < -9e4) continue;
-				w.surface(d, c, 1); const h0 = w.sH, rd = w.sRivD, rl = w.sRivL, rim = w.sRim || 0;
-				const e1 = norm(cross(d, Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0])), e2 = cross(d, e1);
+				w.surface(d, c, 1); const h0 = w.sH, rl = w.sRivL, rx = w.sRivX, rhw = w.sRivHW, cl = w.sRisHW > 0 && (w.sRisH * 0.0018) / (2 * w.sRisHW) > 0.45 ? Math.abs(w.sRisD) - w.sRisHW : 99; // walls only (mean slope > ~25 deg)
+				const [e1, e2] = [norm(cross(d, Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]))].map((x) => [x, cross(d, x)])[0];
 				w.surface(norm([d[0] + e1[0] * eps, d[1] + e1[1] * eps, d[2] + e1[2] * eps]), c, 1); const h1 = w.sH;
 				w.surface(norm([d[0] + e2[0] * eps, d[1] + e2[1] * eps, d[2] + e2[2] * eps]), c, 1); const h2 = w.sH;
 				const gx = (disp(h1) - disp(h0)) / (eps * R), gy = (disp(h2) - disp(h0)) / (eps * R);
-				s.n++; s.slope.push((Math.atan(Math.hypot(gx, gy)) * 180) / Math.PI); s.rivD.push(rd);
-				if (rd < 1) s.inChannel++; if (rim > 0.3) s.onRiser++; if (h0 < rl) s.under++;
-				s.off.push(Math.abs(disp(h) - disp(h0)));
+				s.n++; s.slope.push((Math.atan(Math.hypot(gx, gy)) * 180) / Math.PI);
+				if (rhw > 0) { s.chanX.push(rx); s.chanHW.push(rx / rhw); if (rx < 0) s.inChannel++; }
+				s.cliff.push(cl); if (h0 < rl) s.under++;
 				pts.push(d);
 			}
 			for (let i = 0; i < pts.length; i++) { let best = 9; for (let j = 0; j < pts.length; j++) if (i !== j) { const dd = Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1], pts[i][2] - pts[j][2]) * R; if (dd < best) best = dd; } if (best < 9) s.nn.push(best); }
 		});
 	}
-	for (const [k, s] of Object.entries(stat)) console.log(`veg ${k}:`, JSON.stringify({ n: s.n, slopeDegMedian: fmt(q(s.slope, 0.5)), slopeDegP95: fmt(q(s.slope, 0.95)), slopeDegMax: fmt(q(s.slope, 1)), inChannel: s.inChannel, withinBank_rivD_lt_1p5: s.rivD.filter((x) => x < 1.5).length, onRiser: s.onRiser, underRiverWater: s.under, offSurfaceMaxUnits: fmt(q(s.off, 1)), nnSpacingUnits_p5_p50_p95: [fmt(q(s.nn, 0.05)), fmt(q(s.nn, 0.5)), fmt(q(s.nn, 0.95))] }));
+	const hist = (a, edges) => edges.map((e, i) => a.filter((x) => x >= (i ? edges[i - 1] : 0) && x < e).length);
+	for (const [k, s] of Object.entries(stat)) console.log(`veg ${k}:`, JSON.stringify({ n: s.n, slopeDeg_p50_p95_max: [fmt(q(s.slope, 0.5)), fmt(q(s.slope, 0.95)), fmt(q(s.slope, 1))], nearRiver: s.chanX.length, inChannel: s.inChannel, beyondChannelEdgeUnits_min_p5: [fmt(q(s.chanX, 0)), fmt(q(s.chanX, 0.05))], beyondChannelEdgeHalfWidths_min: fmt(q(s.chanHW, 0)), beyondRiserUnits_min_p5: [fmt(q(s.cliff, 0)), fmt(q(s.cliff, 0.05))], underRiverWater: s.under, nnSpacingUnits_p5_p50_p95: [fmt(q(s.nn, 0.05)), fmt(q(s.nn, 0.5)), fmt(q(s.nn, 0.95))], nnHist_lt_0p02_0p04_0p06_0p08_0p12_0p2_0p4: hist(s.nn, [0.02, 0.04, 0.06, 0.08, 0.12, 0.2, 0.4]) }));
+	console.log("veg LOD1 instances found at LOD0 (same position):", subsetOK, " not found:", subsetBad);
 }
 
 if (want("rivers")) {

@@ -509,7 +509,7 @@
 		float edge_at = 0.25 + 0.5 * hash13(vec3(li, 4.2, 9.1));
 		float tone = mix(hash13(vec3(li, 1.7, 3.1)), hash13(vec3(li + 1.0, 1.7, 3.1)), smoothstep(edge_at - 0.07, edge_at + 0.07, lf));
 		float facet = skirt ? 0.5 : hash13(floor(fn * 5.0 + 0.5) + vec3(floor(d * 260.0)));
-		vec3 red = mix(mix(C_RED_DARK, C_RED, 0.75), mix(C_RED, C_RED_LIGHT, 0.6), tone) * (0.93 + 0.14 * facet);
+		vec3 red = mix(mix(C_RED_DARK, C_RED, 0.3), mix(C_RED, C_RED_LIGHT, 0.35), tone) * (0.88 + 0.2 * facet);
 		vec3 grey = mix(mix(v_color.rgb, C_GREY, 0.45), C_GREY * 1.12, tone * 0.6) * (0.88 + 0.2 * facet);
 		vec3 rockc = mix(grey, red, clamp(warm_dry * 0.85 + mesa * 0.35, 0.0, 1.0) * (1.0 - smoothstep(1800.0, 3000.0, h) * 0.7));
 		float crag = max(smoothstep(1700.0, 2500.0, h), 1.0 - smoothstep(-6.0, 1.0, tmean));
@@ -785,7 +785,11 @@
 		float grow = smoothstep(0.5, 0.95, detail);
 		if (ipos.w < sea_level + 3.0) grow = 0.0; // drowned
 		float r = iparam.w;
-		vec3 p = position * vec3(1.0 + (r - 0.5) * 0.35, 1.0 - (r - 0.5) * 0.3, 1.0 + (fract(r * 7.13) - 0.5) * 0.3) * iparam.y * grow;
+		vec3 stretch = vec3(1.0 + (r - 0.5) * 0.35, 1.0 - (r - 0.5) * 0.3, 1.0 + (fract(r * 7.13) - 0.5) * 0.3);
+		// Boulders: one faceted shape, made many by strong per-instance proportions
+		// (blocky, slabby, tall) on top of the yaw and tilt.
+		if (abs(kind - 6.0) < 0.5) stretch = vec3(0.65 + 0.8 * fract(r * 3.17), 0.5 + 0.75 * fract(r * 5.31), 0.65 + 0.8 * fract(r * 9.73));
+		vec3 p = position * stretch * iparam.y * grow;
 		// A little wind in the foliage and grass.
 		float sway = (aveg.x > 0.5 && aveg.x < 1.5) || aveg.x > 2.5 ? sin(wall_time * 1.4 + r * 40.0) * 0.06 * max(position.y, 0.0) : 0.0;
 		p.x += sway * iparam.y;
@@ -837,11 +841,13 @@
 			col = mix(col, vec3(0.46, 0.30, 0.13), dormant * 0.75);
 			col = mix(col, vec3(0.90, 0.94, 1.0), (1.0 - smoothstep(-4.0, 0.0, tnow)) * smoothstep(0.3, 0.9, shade) * 0.8);
 		} else {
-			// Rock: grey to warm sandstone, mottled.
-			col = mix(vec3(0.34, 0.33, 0.31), vec3(0.50, 0.30, 0.19), moist) * (0.75 + 0.35 * r);
-			col *= 0.8 + 0.35 * vnoise(v_lpos * 90.0 + r * 10.0);
-			col = mix(col, vec3(0.90, 0.94, 1.0), (1.0 - smoothstep(-4.0, 0.0, tnow)) * smoothstep(0.6, 1.0, normalize(v_wn).y * 0.5 + 0.5) * 0.0);
-			rough = 0.8;
+			// Rock: the local rock colour (moist = redness, as in terrainFrag: grey-brown
+			// to red sandstone), one tone per facet and per boulder; flat-shaded.
+			vec3 grey = C_GREY * vec3(1.02, 0.98, 0.93);
+			vec3 red = mix(C_RED_DARK, C_RED, 0.45);
+			col = mix(grey * 0.9, red, moist) * (0.84 + 0.22 * r) * (0.86 + 0.26 * v_veg.w);
+			col = mix(col, C_SNOW, (1.0 - smoothstep(-4.0, 0.0, tnow)) * smoothstep(0.75, 0.95, dot(normalize(v_wn), normalize(v_wpos))) * 0.7);
+			rough = 0.85;
 		}
 		float ao = mix(0.35, 1.0, shade) * mix(0.7, 1.0, v_inst.z);
 		vec3 n = normalize(v_wn);

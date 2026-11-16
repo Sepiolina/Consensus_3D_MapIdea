@@ -220,6 +220,39 @@
 		}
 		return b.build();
 	};
+	// Faceted boulder for the low-poly look: a coarse icosahedron pushed into a blocky,
+	// irregular shape (a few big planar cuts, squashed, one side broader), sunk well
+	// below y = 0 so instances sit partly embedded, and FLAT-shaded: every triangle has
+	// its own vertices and face normal. aveg.w carries a per-facet random (tone).
+	G.boulder = (seed) => {
+		const b = new Builder(seed), g = ico(0); // 20 faces before the cuts: chunky and cheap
+		const cuts = [0, 1, 2, 3, 4].map(() => [nrm([b.r(-1, 1), b.r(-0.3, 1), b.r(-1, 1)]), b.r(0.62, 0.85)]);
+		const pts = g.v.map((v) => {
+			let p = [v[0] * 1.15, v[1] * 0.8, v[2]];
+			// Planar cuts: pull points that lie beyond a plane back onto it (flat faces).
+			for (const [n, dd] of cuts) { const s = p[0] * n[0] + p[1] * n[1] + p[2] * n[2]; if (s > dd) { p = [p[0] - n[0] * (s - dd), p[1] - n[1] * (s - dd), p[2] - n[2] * (s - dd)]; } }
+			const k = 1 + (b.rng.randf() - 0.5) * 0.12;
+			return [p[0] * 0.05 * k, (p[1] * 0.05 + 0.012) * k, p[2] * 0.05 * k];
+		});
+		const P = [], A = [], I = [];
+		for (let i = 0; i < g.f.length; i += 3) {
+			const a = pts[g.f[i]], c = pts[g.f[i + 1]], d = pts[g.f[i + 2]];
+			const u = [c[0] - a[0], c[1] - a[1], c[2] - a[2]], v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+			const fn = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+			const mid = [(a[0] + c[0] + d[0]) / 3, (a[1] + c[1] + d[1]) / 3, (a[2] + c[2] + d[2]) / 3];
+			const flip = fn[0] * mid[0] + fn[1] * (mid[1] - 0.01) + fn[2] * mid[2] < 0;
+			const tone = b.rng.randf(), base = P.length / 3;
+			for (const q of flip ? [a, d, c] : [a, c, d]) { P.push(q[0], q[1], q[2]); A.push(2, 0.55 + 0.45 * clamp01((q[1] + 0.02) / 0.06), 0, tone); }
+			I.push(base, base + 1, base + 2);
+		}
+		const THREE = window.THREE, geo = new THREE.BufferGeometry();
+		geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3));
+		geo.setAttribute("aveg", new THREE.Float32BufferAttribute(A, 4));
+		geo.setIndex(I);
+		geo.computeVertexNormals(); // no shared vertices: these are the face normals
+		return geo;
+	};
+	const clamp01 = (x) => Math.max(0, Math.min(1, x));
 	// Boulder: lumpy icosphere, flattened underneath.
 	G.rock = (seed, detail) => {
 		const b = new Builder(seed), g = ico(detail === undefined ? 1 : detail), base = 0;

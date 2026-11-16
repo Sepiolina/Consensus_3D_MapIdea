@@ -86,13 +86,23 @@
 	// joined by short steep risers. `ramp` is the riser half-width as a fraction of a
 	// step; `tilt` keeps a little of the original slope on the flats so they are not
 	// glass-flat. Used by surface() under a noise mask, so only some regions are mesas.
-	function levelHeight(h, step, ramp, tilt) {
+	function levelHeight(h, step, ramp, tilt, crisp) {
 		step = step || 300; ramp = ramp === undefined ? 0.08 : ramp; tilt = tilt === undefined ? 0.12 : tilt;
 		const y = h / step, k = Math.floor(y), f = y - k;
-		// Smoothstep applied twice: flat benches, a short rounded lip and a riser that is
-		// near-vertical through its middle.
-		const s = smoothstep(0.5 - ramp, 0.5 + ramp, f);
-		return (k + tilt * f + (1 - tilt) * s * s * (3 - 2 * s)) * step;
+		let s;
+		if (crisp) {
+			// Planar wall: constant slope over the whole riser with only a short rounding
+			// at the rim and the foot, so the wall reads as flat-shaded planes with crisp
+			// rim and foot lines (and the whole riser width carries vertex rows).
+			const t = clamp((f - 0.5 + ramp) / (2 * ramp), 0, 1), e = 0.12;
+			s = t < e ? (t * t) / (2 * e * (1 - e)) : t > 1 - e ? 1 - ((1 - t) * (1 - t)) / (2 * e * (1 - e)) : (t - e / 2) / (1 - e);
+		} else {
+			// Smoothstep applied twice: flat benches, a short rounded lip and a riser that
+			// is near-vertical through its middle.
+			s = smoothstep(0.5 - ramp, 0.5 + ramp, f);
+			s = s * s * (3 - 2 * s);
+		}
+		return (k + tilt * f + (1 - tilt) * s) * step;
 	}
 	// Cellular blocks: a constant 0..1 per cell of a jittered point lattice (Voronoi of
 	// one feature point per lattice cell, 27-cell search), so plan-view outlines get
@@ -129,7 +139,7 @@
 	// Minimum riser (cliff wall) width in world units for the finest mesh; coarser
 	// levels of detail pass their own (see PlanetView RISER_W), so every wall gets
 	// several rows of vertices at every level instead of one long triangle.
-	const RISER_W0 = 0.26;
+	const RISER_W0 = 0.21;
 	// River channel width in world units from discharge (m3/s).
 	const riverWidth = (q) => clamp(0.1 * Math.pow(Math.max(q, 1) / 1000, 0.35), 0.14, 0.7);
 
@@ -632,7 +642,11 @@
 		//   sMesa  0..1 tableland mask (cliffs and layered rock),
 		//   sGully 0..1 erosion-channel strength (dry washes),
 		//   sRivD  distance to the nearest channel centre over its half width (99 = none),
-		//   sRivL  that river's water level in metres (-1e5 = none),
+		//   sRivL  that river's water level in metres (-1e5 = none), sRivX distance from the
+		//          channel edge and sRivHW its half width (world units),
+		//   sRisD  signed distance from the middle of the nearest tableland riser (world
+		//          units, + toward the rim), sRisHW its half width, sRisH its height (m),
+		//   sRim   riser plus a margin on both sides (0..1),
 		//   sRock  blended bedrock colour, sWc (bake only) cell-edge weight.
 		// q: 0 = coarse (globe bake), 1 = full, 2 = no finest octaves (AO probes).
 		// Returns the cell index.
@@ -743,7 +757,7 @@
 					this.sG = G;
 					if (G > 0) ramp = Math.min(Math.max(ramp, (0.5 * (rw || RISER_W0) * G) / step), 0.36);
 					const fl = Math.max(field, 0);
-					h += levelHeight(fl, step, ramp, 0.07) * mesa;
+					h += levelHeight(fl, step, ramp, 0.07, true) * mesa;
 					const f = fl / step - Math.floor(fl / step);
 					rim = smoothstep(0.15, 0.45, f) * (1 - smoothstep(0.5, 0.85, f)) * mesa;
 					if (G > 0) {
@@ -772,7 +786,7 @@
 			if (H0 > 0 && h < 8) { const k = smoothstep(0, 12, H0); h += (8 + (h - 8) * 0.12 - h) * k; }
 			if (q === 1) h += 5 * n3(x * 330 + 1.5, y * 330 + 7.5, z * 330 + 3.5) * land;
 			// 6. River channels.
-			this.sRivD = 99; this.sRivL = -1e5;
+			this.sRivD = 99; this.sRivL = -1e5; this.sRivX = 99; this.sRivHW = 0;
 			if (!this._noRiver && this.riverNear) {
 				const near = this.riverNear[c];
 				if (near.length) h = this._carveRivers(d, near, h, mesa);
@@ -792,7 +806,7 @@
 		_carveRivers(d, near, h, mesa) {
 			const x = d[0], y = d[1], z = d[2];
 			const COS_REJECT = Math.cos(0.075 + RIVER_REACH / 100); // paths reach 0.85 of the way to a sea site
-			let best = 1e9, bestD = 99, bestL = -1e5, bestX = 1e9;
+			let best = 1e9, bestD = 99, bestL = -1e5, bestX = 1e9, bestW = 0;
 			for (let i = 0; i < near.length; i++) {
 				const r = near[i], s = this.sites[r];
 				if (s[0] * x + s[1] * y + s[2] * z < COS_REJECT) continue;
@@ -817,17 +831,37 @@
 						if (xb > bankW) { const xw = xb - bankW; prof += (420 + 1600 * mesa) * xw + 900 * xw * xw; }
 						if (dist > RIVER_REACH - 0.5) { const e = dist - (RIVER_REACH - 0.5); prof += 30000 * e * e; }
 					}
-					if (prof < best) { best = prof; bestL = wl; bestX = dist - hw; bestD = dist / hw; }
+					if (prof < best) { best = prof; bestL = wl; bestX = dist - hw; bestD = dist / hw; bestW = hw; }
 				}
 			}
 			if (best >= 1e9) return h;
-			this.sRivD = bestD; this.sRivL = bestL;
+			this.sRivD = bestD; this.sRivL = bestL; this.sRivX = bestX; this.sRivHW = bestW;
 			// Smooth minimum against the ground so the valley rim is rounded, not creased.
 			const k = 18, hh = clamp(0.5 + 0.5 * (h - best) / k, 0, 1);
 			const out = Math.min(h + (best - h) * hh - k * hh * (1 - hh), h);
 			// Right beside the water the banks are levelled to the profile (also raised).
 			const lev = 1 - smoothstep(0.1, 0.35, bestX);
 			return out + (best - out) * lev;
+		}
+
+		// Cheap query: distance (world units) from d to the nearest channel edge of any
+		// river near cell c (99 = none); no profile, no surface. For placement pre-passes.
+		riverEdgeDist(d, c) {
+			const near = this.riverNear[c], x = d[0], y = d[1], z = d[2];
+			let best = 99;
+			for (let i = 0; i < near.length; i++) {
+				const seg = this.riverSeg[near[i]];
+				for (let k = 0; k < seg.length; k += 10) {
+					const ax = seg[k], ay = seg[k + 1], az = seg[k + 2], ex = seg[k + 3] - ax, ey = seg[k + 4] - ay, ez = seg[k + 5] - az;
+					const ll = ex * ex + ey * ey + ez * ez;
+					let tt = ll > 0 ? ((x - ax) * ex + (y - ay) * ey + (z - az) * ez) / ll : 0;
+					tt = tt < 0 ? 0 : tt > 1 ? 1 : tt;
+					const dx = x - ax - ex * tt, dy = y - ay - ey * tt, dz = z - az - ez * tt;
+					const e = Math.sqrt(dx * dx + dy * dy + dz * dz) * 100 - 0.5 * (seg[k + 8] + (seg[k + 9] - seg[k + 8]) * tt);
+					if (e < best) best = e;
+				}
+			}
+			return best;
 		}
 
 		// Legacy name: the full-quality surface.
