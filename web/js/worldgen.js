@@ -89,7 +89,10 @@
 	function levelHeight(h, step, ramp, tilt) {
 		step = step || 300; ramp = ramp === undefined ? 0.08 : ramp; tilt = tilt === undefined ? 0.12 : tilt;
 		const y = h / step, k = Math.floor(y), f = y - k;
-		return (k + tilt * f + (1 - tilt) * smoothstep(0.5 - ramp, 0.5 + ramp, f)) * step;
+		// Smoothstep applied twice: flat benches, a short rounded lip and a riser that is
+		// near-vertical through its middle.
+		const s = smoothstep(0.5 - ramp, 0.5 + ramp, f);
+		return (k + tilt * f + (1 - tilt) * s * s * (3 - 2 * s)) * step;
 	}
 	// River channel width in world units from discharge (m3/s).
 	const riverWidth = (q) => clamp(0.1 * Math.pow(Math.max(q, 1) / 1000, 0.35), 0.14, 0.7);
@@ -432,8 +435,17 @@
 				for (let k = 0; k <= n; k++) { const t = k / n; a.push(headwater ? b0 + (b1 - b0) * t : t < 0.5 ? b0 + (bm - b0) * t * 2 : bm + (b1 - bm) * (t * 2 - 1)); }
 				return a;
 			};
+			// Width along the path: the discharge trend times a smooth noise of position
+			// (pools and narrows); it matches at cell borders because it depends on the point.
+			const widths = (path) => {
+				const n3 = this.sn, m = path.pts.length;
+				path.w = path.pts.map((p, k) => (path.w0 + (path.w1 - path.w0) * (k / (m - 1))) * (1 + 0.45 * n3(p[0] * 95 + 2.2, p[1] * 95 + 7.4, p[2] * 95 + 4.8)));
+				return path;
+			};
+			const o0 = out.length;
 			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 12), w0: w1 * 0.5, w1, bed: beds(12, bc, bc, bOut, true) }); }
 			else for (const j of ups) out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 24), w0: riverWidth(this.flux[j]), w1, bed: beds(24, bed ? (bed[j] + bc) * 0.5 : 0, bc, bOut, false) });
+			for (let i = o0; i < out.length; i++) widths(out[i]);
 			return out;
 		}
 
@@ -506,6 +518,8 @@
 				this.elevK[c] = h > 0 ? h : h * SEA_K;
 				let m = r === ROCK.SANDSTONE ? 1 : r === ROCK.LIMESTONE ? 0.8 : r === ROCK.GRANITE ? 0.35 : r === ROCK.VOLCANIC ? 0.3 : 0.12;
 				m *= 1 - 0.55 * smoothstep(600, 1700, this.precip[c]);   // dry country weathers into mesas
+				// Warm, dry country of any bedrock weathers into mesas and buttes too.
+				m = Math.max(m, 0.6 * smoothstep(11, 18, this.tempMean[c]) * (1 - smoothstep(500, 1000, this.precip[c])));
 				m *= 1 - smoothstep(1400, 2800, h);                         // not in the high ranges
 				this.mesaP[c] = h > 0 ? m : 0;
 			}
@@ -530,7 +544,7 @@
 				for (const path of this.riverPaths(c)) {
 					const pts = path.pts, m = pts.length;
 					for (let k = 0; k < m - 1; k++) {
-						const wa = path.w0 + (path.w1 - path.w0) * (k / (m - 1)), wb = path.w0 + (path.w1 - path.w0) * ((k + 1) / (m - 1));
+						const wa = path.w[k], wb = path.w[k + 1];
 						seg.push(pts[k][0], pts[k][1], pts[k][2], pts[k + 1][0], pts[k + 1][1], pts[k + 1][2], path.bed[k], path.bed[k + 1], wa, wb);
 					}
 				}

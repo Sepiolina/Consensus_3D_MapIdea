@@ -75,6 +75,30 @@
 	float aa_keep(float freq, float px) {
 		return 1.0 - smoothstep(0.15, 0.45, px * freq / PLANET_R);
 	}
+	// Cellular (Worley) noise: distances to the nearest and second-nearest feature
+	// point. F2 - F1 gives crack networks, F1 gives pebbles and cells.
+	vec2 worley3(vec3 p) {
+		vec3 i = floor(p);
+		vec3 f = fract(p);
+		float d1 = 8.0;
+		float d2 = 8.0;
+		for (int z = -1; z <= 1; z++) {
+			for (int y = -1; y <= 1; y++) {
+				for (int x = -1; x <= 1; x++) {
+					vec3 g = vec3(float(x), float(y), float(z));
+					vec3 o = vec3(hash13(i + g), hash13(i + g + 17.3), hash13(i + g + 31.7));
+					vec3 r = g + o - f;
+					float dd = dot(r, r);
+					if (dd < d1) { d2 = d1; d1 = dd; } else if (dd < d2) { d2 = dd; }
+				}
+			}
+		}
+		return vec2(sqrt(d1), sqrt(d2));
+	}
+	// Ridged value noise, 0..1, peaks along thin lines (strokes, paths, ripples).
+	float ridge(vec3 p) {
+		return 1.0 - abs(2.0 * vnoise(p) - 1.0);
+	}
 	// Current temperature (deg C) from annual mean + seasonal half-range.
 	float temp_now(float tmean, float tamp, vec3 dir) {
 		float hemi = clamp(dir.y * 6.0, -1.0, 1.0);
@@ -374,12 +398,46 @@
 		float snow = snow_cover(tnow, d);
 		float wet = smoothstep(170.0, 1600.0, precip);
 		float warm_dry = smoothstep(6.0, 16.0, tmean) * (1.0 - smoothstep(700.0, 1900.0, precip));
-		// Vegetation density: clumps of darker growth and lighter, drier ground.
-		float clump = smoothstep(0.42, 0.68, n_mid * 0.65 + n_brush * 0.35);
-		vec3 growth = mix(col * vec3(0.78, 0.86, 0.70), C_FOREST * 1.1, wet * 0.45);
-		col = mix(col, growth, clump * (0.4 + 0.4 * wet) * relief * (1.0 - snow));
-		col = mix(col, col * vec3(1.12, 1.05, 0.92), smoothstep(0.55, 0.3, n_mid) * (1.0 - wet) * 0.6 * relief);
-		col *= 1.0 + ((n_brush - 0.5) * 0.42 + n_fine * 0.18) * relief;
+		// Painted ground. Grass and bare earth interlock through a height-like mask
+		// (clumps + directional tuft strokes) cut by a narrow threshold, so the grass
+		// breaks up into earth with ragged edges instead of a smooth blend. Earth gets
+		// cracks and pebbles (cellular noise) and lighter trampled tracks. Every layer
+		// fades by pixel footprint (k1..k3), so the map view stays calm.
+		float k1 = aa_keep(700.0, px);
+		float k2 = aa_keep(1800.0, px);
+		float k3 = aa_keep(4200.0, px);
+		vec3 sq = d + (vec3(vnoise(d * 160.0), vnoise(d * 160.0 + 4.1), vnoise(d * 160.0 + 8.3)) - 0.5) * 0.004;
+		float clumpH = fbm_aa(sq * 600.0 + 2.0, px * 600.0 / PLANET_R);
+		// Tufts: ridged noise stretched along a slowly turning direction.
+		float ang = vnoise(d * 40.0) * 6.2832;
+		vec3 ax = normalize(cross(up, vec3(cos(ang), 0.37, sin(ang))));
+		vec3 ay = cross(up, ax);
+		vec3 sp = vec3(dot(d, ax) * 2000.0, dot(d, ay) * 650.0, dot(d, up) * 650.0);
+		float tuft = pow(ridge(sp), 3.0) * aa_keep(2000.0 * 1.6, px);
+		float grassH = clumpH * 0.8 + (n_brush - 0.5) * 0.35 + tuft * 0.1;
+		float cover = clamp(0.2 + 0.85 * wet + (n_mid - 0.5) * 0.5, 0.0, 1.0);
+		float path = smoothstep(0.955, 0.99, ridge(sq * 75.0 + 3.3)) * smoothstep(0.55, 0.75, vnoise(d * 30.0 + 2.0)) * k1 * (1.0 - wet * 0.8) * (1.0 - smoothstep(0.03, 0.1, steep));
+		float edgew = 0.045 + 0.25 * (1.0 - k2);   // ragged but crisp up close, soft far away
+		float grass = smoothstep(1.0 - cover - edgew, 1.0 - cover + edgew, grassH) * (1.0 - path);
+		grass = mix(1.0, grass, relief * (1.0 - snow));
+		// Earth: ochre, with cracks and scattered pebbles.
+		vec3 earth = mix(mix(mix(C_OCHRE, C_GOLDEN, 0.35), C_SAND, 0.25) * 1.04, mix(C_OCHRE, C_SAND, 0.6), path * 0.7) * (0.88 + 0.24 * n_brush);
+		float crack = 0.0;
+		float pebble = 0.0;
+		if (k1 > 0.0) {
+			vec2 wc = worley3(sq * 1100.0);
+			crack = (1.0 - smoothstep(0.0, 0.06, wc.y - wc.x)) * aa_keep(1100.0 * 2.5, px) * smoothstep(0.5, 0.7, vnoise(d * 110.0 + 6.0)) * (1.0 - wet);
+			vec2 wp = worley3(sq * 1500.0 + 5.0);
+			pebble = (1.0 - smoothstep(0.1, 0.22, wp.x)) * aa_keep(1500.0 * 3.0, px) * step(0.6, hash13(floor(sq * 1500.0 + 5.0) + 3.0));
+		}
+		earth *= 1.0 - 0.25 * crack;
+		earth = mix(earth, vec3(0.58, 0.52, 0.42), pebble * 0.5);
+		// Grass: the climate colour, darker in dense clumps, lit tips along the strokes.
+		vec3 grassc = mix(col, C_GRASS * 1.1, 0.4 * (1.0 - wet)) * mix(0.7, 1.12, smoothstep(0.35, 0.8, grassH)) * (1.0 + tuft * 0.3);
+		grassc = mix(grassc, C_FOREST * 1.15, smoothstep(0.62, 0.85, clumpH) * wet * 0.55);
+		col = mix(col, mix(earth, grassc, grass), relief * (1.0 - snow));
+		float groundBump = grass * (grassH * 0.8 + tuft * 0.5) + (1.0 - grass) * (pebble * 0.6 - crack * 0.5 + n_brush * 0.2);
+		float clump = clumpH;
 
 		// Dry washes: sand and gravel in gully floors.
 		float wash = smoothstep(0.5, 0.85, gully + (n_mid - 0.5) * 0.3) * smoothstep(-0.05, 0.25, curv) * (1.0 - 0.6 * wet);
@@ -388,7 +446,11 @@
 		// River banks: a sandy strip and damp sand at the waterline.
 		float rivl = v_rivl + flood * 45.0;
 		float bank = (1.0 - smoothstep(1.3, 2.6, rivd + (n_mid - 0.5) * 1.0)) * relief;
-		col = mix(col, C_SAND * (0.92 + 0.2 * n_brush), bank * 0.9);
+		// Wind and current ripples on sand.
+		float rip = (sin(dot(d, normalize(vec3(0.7, 0.2, 0.68))) * 9000.0 + vnoise(d * 500.0) * 9.0) * 0.5 + 0.5) * k2;
+		float sandy = max(max(bank, wash), (1.0 - smoothstep(6.0, 22.0, above)) * step(0.0, above) * relief);
+		col = mix(col, C_SAND * (0.9 + 0.2 * n_brush) * (0.94 + 0.12 * rip), bank * 0.9);
+		col *= 1.0 + (rip - 0.5) * 0.08 * sandy;
 		float damp = (1.0 - smoothstep(rivl + 2.0, rivl + 14.0, h)) * step(rivd, 6.0) * relief;
 		col *= 1.0 - 0.3 * damp;
 		col = mix(col, vec3(0.20, 0.33, 0.30), (1.0 - smoothstep(rivl - 6.0, rivl, h)) * step(rivd, 6.0) * relief * 0.6);
@@ -398,7 +460,7 @@
 		// Rock: steep faces everywhere, moderate risers too in mesa country.
 		float rocky = smoothstep(0.24, 0.46, steep + (n_mid - 0.5) * 0.14);
 		rocky = max(rocky, smoothstep(0.16, 0.3, steep) * mesa * 0.9);
-		rocky = max(rocky, smoothstep(2200.0, 3400.0, h) * smoothstep(0.08, 0.2, steep));
+		rocky = max(rocky, smoothstep(1500.0, 2800.0, h) * smoothstep(0.06, 0.16, steep + (n_mid - 0.5) * 0.08));
 		// Layered strata follow height with a slight warp; fade once they get thinner
 		// than a pixel. Vertical streaks come for free: d barely changes up a wall.
 		float band = h / 55.0 + (vnoise(d * 70.0) - 0.5) * 1.2 + (fbm(d * 260.0) - 0.5) * 0.35;
@@ -413,15 +475,20 @@
 		vec3 grey = mix(mix(v_color.rgb, C_GREY, 0.45), C_GREY * 1.12, strata * 0.6) * (0.85 + 0.25 * tone);
 		vec3 rockc = mix(grey, red, clamp(warm_dry * 0.85 + mesa * 0.35, 0.0, 1.0) * (1.0 - smoothstep(1800.0, 3000.0, h) * 0.7));
 		float streak = fbm_aa(vec3(d * 700.0), px * 700.0 / PLANET_R);
-		rockc *= 0.84 + 0.28 * streak;
-		rockc *= 1.0 + clamp(-curv, 0.0, 1.0) * 0.25;                // sunlit caprock lips
+		// Vertical fluting and cracks: ridged noise of the direction alone, so it runs
+		// straight down a wall; hard/soft layers as ledges (smooth bands for the bump).
+		float flute = pow(ridge(d * 1500.0 + 7.0), 4.0) * aa_keep(1500.0 * 1.5, px);
+		float ledge = (0.5 + 0.5 * sin(band * 6.2832 * 2.0)) * bk;
+		rockc *= (0.84 + 0.28 * streak) * (1.0 - 0.35 * flute) * (0.9 + 0.2 * ledge);
+		rockc *= 1.0 + clamp(-curv * 1.5, 0.0, 1.0) * 0.35;          // sunlit caprock lips
+		rockc *= 1.0 - clamp(curv * 1.5, 0.0, 1.0) * 0.3;            // dark contact at the foot
 		col = mix(col, rockc, rocky);
 		// Scree and talus at cliff feet (concave, occluded, moderately steep).
 		float scree = (1.0 - smoothstep(0.55, 0.85, v_nrm.w)) * smoothstep(0.03, 0.14, steep) * (1.0 - rocky) * relief;
-		col = mix(col, mix(rockc, vec3(0.56, 0.46, 0.34), 0.6) * (0.9 + 0.3 * n_brush), scree * (0.25 + 0.3 * mesa));
+		col = mix(col, mix(rockc, vec3(0.56, 0.46, 0.34), 0.5) * (0.85 + 0.3 * n_brush), scree * (0.35 + 0.4 * mesa));
 
 		// Snow on top of everything but sheer walls.
-		col = mix(col, C_SNOW * (0.94 + 0.08 * n_brush), snow * (1.0 - rocky * 0.55) * relief);
+		col = mix(col, C_SNOW * (0.94 + 0.08 * n_brush), snow * (1.0 - rocky * smoothstep(0.12, 0.3, steep) * 0.9) * relief);
 		col = mix(col, land_albedo(h, tnow, tmean, precip, d, v_color.rgb, 2.0), 1.0 - relief);
 		// Drowned ground turns to wet sea bed, darkening with depth; occluded hollows a
 		// touch darker; cloud shadows.
@@ -431,14 +498,14 @@
 		col *= 1.0 - 0.2 * cloud_cover(d) * relief;
 
 		// Bump the normal with the ground detail (screen-space gradient of a height).
-		float bump = (skirt ? 0.0 : 1.0) * relief * (rocky * streak * 0.5 + (1.0 - rocky) * (clump * 0.35 + n_brush * 0.35));
+		float bump = (skirt ? 0.0 : 1.0) * relief * (rocky * streak * 0.35 + (1.0 - rocky) * (groundBump * (1.0 - sandy) + rip * 0.4 * sandy));
 		float useF = smoothstep(0.18, 0.42, fslope - sslope) * relief;
 		vec3 n = normalize(mix(sn, fn, useF));
 		vec3 r1 = cross(dpy, n);
 		vec3 r2 = cross(n, dpx);
 		float det = dot(dpx, r1);
 		vec3 grad = sign(det) * (dFdx(bump) * r1 + dFdy(bump) * r2);
-		n = normalize(abs(det) * n - grad * 0.013);
+		n = normalize(abs(det) * n - grad * 0.02);
 		vec3 emi = h > sea_level ? night_lights(d, v_color.a) * (1.0 - relief * 0.7) : vec3(0.0);
 		// Skirts sit under the ground, so the shadow map would black them out.
 		float sh = skirt || dot(n, sun_dir_world) <= 0.0 ? 1.0 : shadow_factor(v_wpos, n);
@@ -480,7 +547,7 @@
 		// Soft swell plus bands of surf rolling onto the shore.
 		float swell = fbm(d * 260.0 + vec3(wall_time * 0.15, 0.0, wall_time * 0.1));
 		col *= (0.9 + 0.2 * swell) * (1.0 - 0.2 * cloud_cover(d) * clamp(detail * 1.5, 0.0, 1.0));
-		float shore = 1.0 - smoothstep(0.0, 120.0, depth);
+		float shore = (1.0 - smoothstep(0.0, 30.0, depth)) * smoothstep(-40.0, 0.0, v_data.x); // surf only on real shores, not flooded plains
 		float surf = sin(depth * 0.14 - wall_time * 1.4 + swell * 5.0) * 0.5 + 0.5;
 		float foam = shore * smoothstep(0.6, 0.95, surf) * (1.0 - ice);
 		col = mix(col, vec3(0.95, 0.93, 0.85), foam * 0.45);
@@ -492,7 +559,7 @@
 		// Ripple the normal a little so the sun glints.
 		vec3 rn = normalize(n + (vec3(vnoise(d * 700.0 + wall_time * 0.5), vnoise(d * 700.0 + 9.0 - wall_time * 0.4), vnoise(d * 700.0 + 4.0)) - 0.5) * 0.12);
 		vec3 c = lit(col, rn, v_wpos, mix(0.15, 0.8, ice), 0.7, vec3(0.0), 1.0);
-		float alpha = clamp(mix(0.62, 0.97, 1.0 - exp(-depth / 200.0)) + foam * 0.3 + fres * 0.25, 0.0, 1.0);
+		float alpha = clamp(mix(0.78, 0.97, 1.0 - exp(-depth / 150.0)) + foam * 0.3 + fres * 0.25, 0.0, 1.0);
 		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), alpha);
 	}`;
 
@@ -543,7 +610,7 @@
 		if (v_level < sea_level - 2.0) discard;
 		float s = abs(v_side);                  // 0 centre, 1 channel edge, >1 over the banks
 		float depthk = 1.0 - smoothstep(0.0, 1.15, s);
-		vec3 col = mix(vec3(0.20, 0.45, 0.42), vec3(0.06, 0.27, 0.30), depthk);
+		vec3 col = mix(vec3(0.24, 0.43, 0.40), vec3(0.09, 0.27, 0.29), depthk);
 		col = mix(col, vec3(0.40, 0.34, 0.22), clamp(v_flood, 0.0, 1.0) * 0.55);
 		// Flow: noise advected downstream.
 		vec3 q = v_dir * PLANET_R * 7.0 - v_flowdir * wall_time * 1.6;
@@ -639,6 +706,11 @@
 	void main() {
 		float part = v_veg.x;
 		float shade = v_veg.y;
+		if (kind > 7.5) { // contact shadow disc: dark centre fading out
+			float day = smoothstep(-0.1, 0.25, dot(normalize(v_wpos), sun_dir_world));
+			gl_FragColor = vec4(0.0, 0.0, 0.0, shade * shade * 0.45 * day);
+			return;
+		}
 		float r = v_veg.z;
 		float tnow = v_inst.x;
 		float tmean = v_inst.y;
@@ -669,7 +741,11 @@
 		vec3 n = normalize(v_wn);
 		vec3 c = lit(col, n, v_wpos, rough, part > 1.5 && part < 2.5 ? 0.05 : 0.02, vec3(0.0), ao);
 		// Sun through the leaves.
-		if (part > 0.5 && part < 1.5) c += col * sun_color * max(dot(-n, sun_dir_world), 0.0) * 0.25 * shade;
+		if (part > 0.5 && part < 1.5) c += col * sun_color * max(dot(-n, sun_dir_world), 0.0) * 0.35 * shade;
+		// Warm rim where the crown's edge catches the sun.
+		vec3 vv = normalize(cameraPosition - v_wpos);
+		float rim = pow(1.0 - max(dot(n, vv), 0.0), 3.0) * max(dot(n, sun_dir_world) + 0.3, 0.0);
+		if (part > 0.5 && part < 1.5 || part > 2.5) c += vec3(1.0, 0.75, 0.45) * sun_color * rim * 0.18 * shade;
 		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), 1.0);
 	}`;
 

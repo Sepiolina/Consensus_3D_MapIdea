@@ -351,7 +351,7 @@
 					const d = pts[k], a = pts[Math.min(k + 1, n - 1)], b = pts[Math.max(k - 1, 0)];
 					const ac = norm(cross(d, norm([a[0] - b[0], a[1] - b[1], a[2] - b[2]])));
 					if (k > 0) along += Math.acos(clamp(dot(d, pts[k - 1]), -1, 1)) * R;
-					const hw = 0.5 * (path.w0 + (path.w1 - path.w0) * (k / (n - 1)));
+					const hw = 0.5 * path.w[k];
 					w.sample(d, c);
 					for (const side of [-1, 1]) {
 						pos.push(d[0] * R, d[1] * R, d[2] * R);
@@ -384,7 +384,7 @@
 			// [name, geometry, leaf colour, wood colour, kind id, global instance cap]
 			const kinds = [
 				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 5000],
-				["broad1", G.broadleaf(23), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 5000],
+				["broad1", G.broadleaf(23, true), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 5000],
 				["conifer", G.conifer(5), [0.08, 0.14, 0.08], [0.20, 0.14, 0.10], 1, 6000],
 				["acacia", G.acacia(7), [0.26, 0.27, 0.11], [0.26, 0.19, 0.12], 2, 5000],
 				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3, 3000],
@@ -392,6 +392,8 @@
 				["tuft", G.tuft(4), [0.40, 0.36, 0.15], [0.40, 0.34, 0.16], 5, 20000],
 				["rock0", G.rock(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 2500],
 				["rock1", G.rock(29, 0), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 4000],
+				["snag", G.snag(17), [0.2, 0.2, 0.1], [0.36, 0.30, 0.24], 7, 1500],
+				["blob", G.blob(), [0, 0, 0], [0, 0, 0], 8, 30000],
 			];
 			this.vegKinds = kinds.map(([name, base, leaf, wood, kind, limit]) => {
 				const geo = new THREE.InstancedBufferGeometry();
@@ -399,11 +401,14 @@
 				geo.setIndex(base.getIndex());
 				geo.instanceCount = 0;
 				const extra = { leaf_col: { value: new THREE.Vector3(...leaf) }, wood_col: { value: new THREE.Vector3(...wood) }, kind: { value: kind } };
-				const material = this._mat(S.vegVert, S.vegFrag, extra, { side: kind === 5 ? THREE.DoubleSide : THREE.FrontSide });
+				const material = kind === 8
+					? this._mat(S.vegVert, S.vegFrag, extra, { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+					: this._mat(S.vegVert, S.vegFrag, extra, { side: kind === 5 || kind === 3 ? THREE.DoubleSide : THREE.FrontSide });
 				const depth = this._mat(S.vegVert, S.depthFrag, extra, { side: THREE.DoubleSide });
 				const mesh = new THREE.Mesh(geo, material);
 				mesh.frustumCulled = false; mesh.visible = false;
-				if (kind !== 5 && kind !== 4) mesh.layers.enable(1); // grass tufts and shrubs cast no shadow (cost)
+				if (kind !== 5 && kind !== 4 && kind !== 8) mesh.layers.enable(1); // grass tufts, shrubs and contact blobs cast no shadow
+				if (kind === 8) mesh.renderOrder = 1;
 				this.cellsRoot.add(mesh);
 				return { name, geo, mesh, material, depth, cap: 0, buf: null, limit };
 			});
@@ -475,10 +480,14 @@
 			};
 			// Exact height for an instance that sits on the drawn triangle: invert disp().
 			const heightOn = (rr) => (rr >= 0 ? -RELIEF_H0 * Math.log(Math.max(1 - rr / RELIEF_MAX, 1e-6)) : -99999);
+			const BLOB_R = { [K.broad0]: 0.09, [K.broad1]: 0.08, [K.conifer]: 0.07, [K.acacia]: 0.11, [K.palm]: 0.06, [K.shrub]: 0.045, [K.rock0]: 0.06, [K.rock1]: 0.06, [K.snag]: 0.04 };
 			const push = (kind, p, scale, lean, extra) => {
 				const hemi = clamp(p.d[1] * 6, -1, 1);
 				const h = p.h < 15 ? -99999 : heightOn(p.rr);
 				lists[kind].push(p.d[0], p.d[1], p.d[2], h, rng.randf() * 6.2832, scale, lean, rng.randf(), p.t, p.amp * hemi, p.ao, extra);
+				// Soft contact shadow under everything that stands on the ground.
+				const r = BLOB_R[kind];
+				if (r) lists[K.blob].push(p.d[0], p.d[1], p.d[2], h, 0, scale * r, 0, 0.5, p.t, 0, p.ao, 0);
 			};
 			const area = (fine ? 1 : 1) * 1.0;
 			// Trees.
@@ -499,6 +508,7 @@
 				else if (tm > 21 && p.p > 1300 && p.h < 300 && rng.randf() < 0.22) kind = K.palm;
 				else if (tm > 16 && p.p < 1100 && rng.randf() < 0.75) kind = K.acacia;
 				else kind = rng.randf() < 0.5 ? K.broad0 : K.broad1;
+				if (wet < 0.35 && rng.randf() < 0.12) kind = K.snag; // a few dead trees in dry country
 				push(kind, p, 0.7 + 0.65 * rng.randf(), (rng.randf() - 0.5) * 0.16, wet);
 			}
 			// Rocks and boulders: cliff feet, steep slopes, gullies, dry country.
@@ -522,7 +532,7 @@
 					if (p.h < 18 || p.up < 0.8 || p.rivD < 1.3 || p.t < -8) continue;
 					const wet = smoothstep(150, 1300, p.p);
 					const clump = n3(d[0] * 90 + 1.9, d[1] * 90 + 6.1, d[2] * 90 + 3.3) + 0.6 * n3(d[0] * 260 + 4.4, d[1] * 260 + 8.8, d[2] * 260 + 2.2);
-					const dens = (0.1 + 0.55 * wet) * smoothstep(-0.3, 0.4, clump) + (p.rivD < 4 ? 0.3 : 0);
+					const dens = (0.1 + 0.55 * wet) * smoothstep(-0.3, 0.4, clump) + (p.rivD < 5 ? 0.55 : 0) + 0.35 * smoothstep(0.05, 0.4, p.curv);
 					if (rng.randf() > dens) continue;
 					push(K.shrub, p, 0.6 + 0.9 * rng.randf(), (rng.randf() - 0.5) * 0.2, wet);
 				}

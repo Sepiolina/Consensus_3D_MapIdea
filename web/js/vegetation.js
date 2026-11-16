@@ -115,16 +115,43 @@
 	const G = (POC.vegGeometry = {});
 
 	// Rounded broadleaf: a trunk and a crown of 4-5 merged, jittered blobs.
-	G.broadleaf = (seed) => {
-		const b = new Builder(seed), h = 0.05;
-		b.tube(-0.05, h + 0.05, 0.011, 0.007, 5, b.r(-0.01, 0.01), 0);
-		const crown = [0, h + 0.07, 0], n = 4;
-		b.blob([0, h + 0.075, 0], [0.075, 0.065, 0.075], 0, 0.22, 1, crown, 0.55);
+	G.broadleaf = (seed, tall) => {
+		const b = new Builder(seed), h = tall ? 0.09 : 0.06;
+		const lean = b.r(-0.015, 0.015);
+		b.tube(-0.05, h + 0.04, 0.012, 0.007, 5, lean, 0);
+		// Two or three limbs carry lobes out from the trunk, so the crown is lumpy and
+		// off-centre rather than a ball on a stick.
+		const crown = [lean, h + 0.08, 0], n = tall ? 6 : 5;
+		b.blob([lean, h + 0.085, 0], tall ? [0.06, 0.08, 0.06] : [0.07, 0.058, 0.068], 0, 0.25, 1, crown, 0.5);
 		for (let k = 0; k < n - 1; k++) {
-			const a = (k / (n - 1)) * Math.PI * 2 + b.r(-0.4, 0.4), d = b.r(0.045, 0.075);
-			b.blob([Math.cos(a) * d, h + b.r(0.025, 0.1), Math.sin(a) * d], [b.r(0.04, 0.058), b.r(0.035, 0.05), b.r(0.04, 0.058)], 0, 0.3, 1, crown, 0.6);
+			const a = (k / (n - 1)) * Math.PI * 2 + b.r(-0.5, 0.5), d = b.r(0.04, 0.085) * (tall ? 0.8 : 1);
+			const y = h + b.r(0.02, tall ? 0.15 : 0.1), r = b.r(0.032, 0.058);
+			b.blob([lean + Math.cos(a) * d, y, Math.sin(a) * d], [r * b.r(0.9, 1.25), r * b.r(0.7, 0.95), r * b.r(0.9, 1.25)], 0, 0.35, 1, crown, 0.55);
 		}
 		b.shadeFoliage(crown[1], 0.12);
+		return b.build();
+	};
+	// Dead / bare tree for dry country: a trunk and a few crooked limbs.
+	G.snag = (seed) => {
+		const b = new Builder(seed);
+		b.tube(-0.05, 0.12, 0.011, 0.006, 5, b.r(-0.02, 0.02), 0);
+		for (let k = 0; k < 3; k++) {
+			const base = b.p.length / 3, a = b.r(0, 6.28), y0 = b.r(0.06, 0.11), L = b.r(0.05, 0.09);
+			b.tube(0, L, 0.005, 0.002, 4, L * 0.9, 0);
+			// rotate the limb we just built around Y and lift it onto the trunk
+			for (let v = base; v < b.p.length / 3; v++) {
+				const x = b.p[v * 3], z = b.p[v * 3 + 2];
+				b.p[v * 3] = x * Math.cos(a) - z * Math.sin(a); b.p[v * 3 + 2] = x * Math.sin(a) + z * Math.cos(a); b.p[v * 3 + 1] += y0;
+			}
+		}
+		return b.build();
+	};
+	// Soft contact shadow: a ground disc whose alpha fades outward (drawn blended).
+	G.blob = () => {
+		const b = new Builder(1), n = 10;
+		const c = b.vert([0, 0.004, 0], [0, 1, 0], 5, 1);
+		for (let k = 0; k < n; k++) { const a = (k / n) * Math.PI * 2; b.vert([Math.cos(a), 0.004, Math.sin(a)], [0, 1, 0], 5, 0); }
+		for (let k = 0; k < n; k++) b.i.push(c, 1 + ((k + 1) % n), 1 + k);
 		return b.build();
 	};
 	// Layered conifer: stacked drooping tiers on a short trunk.
@@ -153,16 +180,22 @@
 	};
 	// Palm: curved trunk and drooping fronds.
 	G.palm = (seed) => {
-		const b = new Builder(seed), h = 0.3, bend = 0.05;
+		const b = new Builder(seed), h = 0.3, bend = 0.06;
 		b.tube(-0.05, h, 0.01, 0.007, 5, bend, 0);
-		const top = [bend, h, 0], n = 7;
+		const top = [bend, h, 0], n = 8, seg = 4;
+		// Arching fronds: tapered strips that rise, then droop toward the tip.
 		for (let k = 0; k < n; k++) {
-			const a = (k / n) * Math.PI * 2 + b.r(-0.2, 0.2), dx = Math.cos(a), dz = Math.sin(a), px = -dz, pz = dx;
-			const L = b.r(0.12, 0.16), w = 0.022;
-			const m = [top[0] + dx * L * 0.45, top[1] + 0.03, top[2] + dz * L * 0.45], e = [top[0] + dx * L, top[1] - b.r(0.03, 0.06), top[2] + dz * L];
-			const up = [dx * 0.3, 1, dz * 0.3];
-			const t0 = b.vert(top, up, 1, 0.6), ml = b.vert([m[0] + px * w, m[1], m[2] + pz * w], up, 1, 0.9), mr = b.vert([m[0] - px * w, m[1], m[2] - pz * w], up, 1, 0.9), tip = b.vert(e, up, 1, 1);
-			b.tri(t0, ml, mr); b.tri(ml, tip, mr);
+			const a = (k / n) * Math.PI * 2 + b.r(-0.25, 0.25), dx = Math.cos(a), dz = Math.sin(a), px = -dz, pz = dx;
+			const L = b.r(0.13, 0.18), w = 0.024, rise = b.r(0.02, 0.05);
+			let prevL = -1, prevR = -1;
+			for (let s = 0; s <= seg; s++) {
+				const t = s / seg, ww = w * (s === 0 ? 0.3 : 1 - t * 0.75);
+				const y = top[1] + rise * Math.sin(Math.PI * t * 0.7) - 0.11 * t * t;
+				const cx = top[0] + dx * L * t, cz = top[2] + dz * L * t, up = [dx * (t - 0.3), 1, dz * (t - 0.3)];
+				const l = b.vert([cx + px * ww, y, cz + pz * ww], up, 1, 0.55 + 0.45 * t), r = b.vert([cx - px * ww, y - 0.004, cz - pz * ww], up, 1, 0.5 + 0.45 * t);
+				if (s > 0) { b.tri(prevL, l, prevR); b.tri(prevR, l, r); }
+				prevL = l; prevR = r;
+			}
 		}
 		return b.build();
 	};

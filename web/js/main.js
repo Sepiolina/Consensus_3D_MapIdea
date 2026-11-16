@@ -84,9 +84,28 @@
 		scene.add(view.group);
 		buildSystem();
 		fillStats();
-		st.tDays = 0; st.spin = 0; st.frameAngle = 0;
+		// Start at a time of day with the sun about 30 degrees above the default focus
+		// (long, soft shadows); time then runs normally from there.
+		st.tDays = startTime(); st.spin = (6.283185307 * st.tDays) / (system.home.dayH / 24); st.frameAngle = 0;
 		$("loading").hidden = true;
 		st.generating = false; st.ready = true;
+	}
+
+	// Earliest time within the first day when the sun stands about 30 degrees above the
+	// default focus, with the sun rising (morning light).
+	function startTime() {
+		const h = system.home, dayLen = h.dayH / 24, tilt = (h.tilt * Math.PI) / 180, qq = new THREE.Quaternion(), pq = new THREE.Quaternion();
+		let best = 0, bestErr = 1e9, prev = -2;
+		for (let k = 0; k <= 480; k++) {
+			const t = (k / 480) * dayLen, spin = (6.283185307 * t) / dayLen;
+			pq.setFromAxisAngle(X, tilt).multiply(qq.setFromAxisAngle(Y, spin % 6.283185307));
+			const sun = V(system.planetPos(system.homeIndex, t)).multiplyScalar(-1).normalize().applyQuaternion(pq.invert());
+			const f = st.focus.clone().applyAxisAngle(Y, -spin);
+			const e = sun.dot(f), err = Math.abs(e - 0.5);
+			if (e > prev && err < bestErr) { bestErr = err; best = t; }
+			prev = e;
+		}
+		return best;
 	}
 
 	function addLabel(text, obj, cls) {
