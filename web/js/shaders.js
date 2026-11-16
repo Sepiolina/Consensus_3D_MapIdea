@@ -810,7 +810,7 @@
 		// Semantic zoom: grow in below the item's altitude band (no popping).
 		float vis = (1.0 - smoothstep(iinfo.z * 0.75, iinfo.z, cam_alt)) * smoothstep(0.3, 0.8, detail) * layer_on;
 		if (ipos.w < sea_level + 2.0) vis = 0.0; // drowned
-		float size = iinfo.y * clamp(cam_alt / 10.0, 0.6, 2.4) * vis;
+		float size = iinfo.y * clamp(cam_alt / 7.0, 0.9, 2.6) * vis;
 		vec3 base = dir * (PLANET_R + disp(ipos.w) * detail);
 		vec3 wb = (modelMatrix * vec4(base, 1.0)).xyz;
 		vec3 up = normalize(mat3(modelMatrix) * dir);
