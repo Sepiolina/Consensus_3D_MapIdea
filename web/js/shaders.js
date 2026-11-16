@@ -486,7 +486,9 @@
 		// Wind and current ripples on sand.
 		float rip = (sin(dot(d, normalize(vec3(0.7, 0.2, 0.68))) * 9000.0 + vnoise(d * 500.0) * 9.0) * 0.5 + 0.5) * aa_keep(3600.0, px);
 		float sandy = max(max(bank, wash), (1.0 - smoothstep(6.0, 22.0, above)) * step(0.0, above) * relief);
-		col = mix(col, C_SAND * (0.9 + 0.2 * n_brush) * (0.94 + 0.12 * rip), bank * 0.9);
+		// Low gravel and dirt shelf by the water (sand where it is dry), then grass.
+		vec3 gravel = mix(mix(C_SAND, vec3(0.43, 0.37, 0.29), 0.55 * wet + 0.2), vec3(0.36, 0.32, 0.27), pebble * 0.6) * (0.9 + 0.2 * n_brush);
+		col = mix(col, gravel * (0.96 + 0.08 * rip), bank * 0.9);
 		col *= 1.0 + (rip - 0.5) * 0.08 * sandy;
 		float damp = (1.0 - smoothstep(rivl + 2.0, rivl + 14.0, h)) * step(rivd, 6.0) * relief;
 		col *= 1.0 - 0.3 * damp;
@@ -714,7 +716,8 @@
 		vec3 d = normalize(v_dir);
 		float tnow = temp_now(v_data.y, v_data.z, d);
 		float ice = 1.0 - smoothstep(-6.0, -3.0, tnow);
-		vec3 col = mix(vec3(0.22, 0.46, 0.42), vec3(0.07, 0.29, 0.32), smoothstep(0.0, 28.0, depth));
+		// Flat-shaded teal, darker with depth.
+		vec3 col = mix(vec3(0.17, 0.47, 0.44), vec3(0.05, 0.29, 0.32), smoothstep(0.0, 26.0, depth));
 		col = mix(col, vec3(0.40, 0.34, 0.22), clamp(v_flood, 0.0, 1.0) * 0.5);
 		// Falls and rapids: white water where the surface drops steeply.
 		float px = max(length(dFdx(v_wpos)), length(dFdy(v_wpos)));
@@ -727,8 +730,11 @@
 		vec3 n = normalize(v_wpos);
 		vec3 view = normalize(cameraPosition - v_wpos);
 		float fres = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 4.0);
-		col = mix(col, vec3(0.55, 0.65, 0.70), fres * 0.4 * (1.0 - ice));
-		vec3 rn = normalize(n + (vec3(vnoise(d * 900.0 + wall_time * 0.4), vnoise(d * 900.0 + 7.0 - wall_time * 0.3), vnoise(d * 900.0 + 13.0)) - 0.5) * 0.08);
+		col = mix(col, vec3(0.40, 0.58, 0.60), fres * 0.25 * (1.0 - ice));
+		// Facet normal of the water triangles (level pools are flat, falls tilt), with
+		// a faint ripple: reads as low-poly water.
+		vec3 fnw = facet_normal(dFdx(v_wpos), dFdy(v_wpos), n);
+		vec3 rn = normalize(fnw + (vec3(vnoise(d * 900.0 + wall_time * 0.4), vnoise(d * 900.0 + 7.0 - wall_time * 0.3), vnoise(d * 900.0 + 13.0)) - 0.5) * 0.05);
 		vec3 c = lit(col, rn, v_wpos, mix(0.15, 0.8, ice), 0.6, vec3(0.0), 1.0);
 		float alpha = mix(0.72, 0.95, smoothstep(0.0, 18.0, depth));
 		gl_FragColor = vec4(tonemap(haze(c, dist, v_wpos)), max(max(alpha, foam), ice) * near);
@@ -788,8 +794,16 @@
 		vec3 stretch = vec3(1.0 + (r - 0.5) * 0.35, 1.0 - (r - 0.5) * 0.3, 1.0 + (fract(r * 7.13) - 0.5) * 0.3);
 		// Boulders: one faceted shape, made many by strong per-instance proportions
 		// (blocky, slabby, tall) on top of the yaw and tilt.
-		if (abs(kind - 6.0) < 0.5) stretch = vec3(0.65 + 0.8 * fract(r * 3.17), 0.5 + 0.75 * fract(r * 5.31), 0.65 + 0.8 * fract(r * 9.73));
-		vec3 p = position * stretch * iparam.y * grow;
+		vec3 pos0 = position;
+		if (abs(kind - 6.0) < 0.5) {
+			stretch = vec3(0.65 + 0.8 * fract(r * 3.17), 0.5 + 0.75 * fract(r * 5.31), 0.65 + 0.8 * fract(r * 9.73));
+			// Per-instance shape: every corner moves by a hash of (corner, instance), the
+			// same for all faces sharing it, so the rock stays closed; the fragment
+			// shader takes the facet normal from screen derivatives.
+			float hv = fract(sin(dot(position * 97.0 + r * 13.0, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+			pos0 *= 0.78 + 0.44 * hv;
+		}
+		vec3 p = pos0 * stretch * iparam.y * grow;
 		// A little wind in the foliage and grass.
 		float sway = (aveg.x > 0.5 && aveg.x < 1.5) || aveg.x > 2.5 ? sin(wall_time * 1.4 + r * 40.0) * 0.06 * max(position.y, 0.0) : 0.0;
 		p.x += sway * iparam.y;
@@ -851,6 +865,7 @@
 		}
 		float ao = mix(0.35, 1.0, shade) * mix(0.7, 1.0, v_inst.z);
 		vec3 n = normalize(v_wn);
+		if (part > 1.5 && part < 2.5) n = facet_normal(dFdx(v_wpos), dFdy(v_wpos), n); // flat-shaded rock
 		vec3 c = lit(col, n, v_wpos, rough, part > 1.5 && part < 2.5 ? 0.05 : 0.02, vec3(0.0), ao);
 		// Sun through the leaves.
 		if (part > 0.5 && part < 1.5) c += col * sun_color * max(dot(-n, sun_dir_world), 0.0) * 0.35 * shade;

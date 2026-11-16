@@ -434,8 +434,8 @@
 				geo.instanceCount = 0;
 				const extra = { leaf_col: { value: new THREE.Vector3(...leaf) }, wood_col: { value: new THREE.Vector3(...wood) }, kind: { value: kind } };
 				const material = kind === 8
-					? this._mat(S.vegVert, S.vegFrag, extra, { transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
-					: this._mat(S.vegVert, S.vegFrag, extra, { side: kind === 5 || kind === 3 ? THREE.DoubleSide : THREE.FrontSide });
+					? this._mat(S.vegVert, S.vegFrag, extra, { extensions: { derivatives: true }, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 })
+					: this._mat(S.vegVert, S.vegFrag, extra, { side: kind === 5 || kind === 3 ? THREE.DoubleSide : THREE.FrontSide, extensions: { derivatives: true } });
 				const depth = this._mat(S.vegVert, S.depthFrag, extra, { side: THREE.DoubleSide });
 				const mesh = new THREE.Mesh(geo, material);
 				mesh.frustumCulled = false; mesh.visible = false;
@@ -659,7 +659,7 @@
 				const sl = slopeOf(s);
 				if (sl > 52 || (z.scree > 0 && !z.foot && !z.bankz && sl < 12)) return;
 				const big = rng.randf();
-				let scale = z.foot ? 1.2 + 3.8 * big * big * smoothstep(60, 220, s.risH) + 0.6 * big : z.bankz ? 0.7 + 1.3 * big : 0.6 + 1.6 * big * big;
+				let scale = z.foot ? 0.9 + 3.6 * big * big * big * smoothstep(60, 220, s.risH) + 0.8 * big : z.bankz ? 0.7 + 1.3 * big : 0.6 + 1.6 * big * big;
 				if (z.rimz) scale *= 0.8;
 				if (near(3, u, v, 0.03 + 0.055 * scale)) return;
 				const warmDry = smoothstep(6, 16, s.t) * (1 - smoothstep(700, 1900, s.p));
@@ -677,7 +677,7 @@
 					const d = norm([pc[0] + (t1[0] * u + t2[0] * v) / R, pc[1] + (t1[1] * u + t2[1] * v) / R, pc[2] + (t1[2] * u + t2[2] * v) / R]);
 					if (w.locate(d, c) !== c) continue;
 					s = sample(d); z = zoneOf(s);
-					placeBoulder(u, v, d, s, z, 0.005 * dc + 0.75 * z.foot + 0.15 * z.rimz + 0.25 * z.bankz + 0.3 * z.scree + 0.04 * s.gully * dc);
+					placeBoulder(u, v, d, s, z, 0.004 * dc + 0.45 * z.foot + 0.06 * z.rimz + 0.2 * z.bankz + 0.25 * z.scree + 0.03 * s.gully * dc);
 				}
 			}
 			const out = plan.map((l) => Float32Array.from(l));

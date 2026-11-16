@@ -86,7 +86,7 @@ if (want("veg")) {
 
 if (want("rivers")) {
 	let segs = 0, rises = 0, maxRise = 0, pathsN = 0, joins = 0, maxJoin = 0; const clearance = [], slope = [], widthJump = [];
-	let ribV = 0, ribFloat = 0, ribBuried = 0, centreDry = 0; const levee = [], leveeCalm = [];
+	let ribV = 0, ribFloat = 0, ribBuried = 0, centreDry = 0, inOther = 0; const levee = [], leveeCalm = [];
 	for (let c = 0; c < w.nCells; c++) {
 		if (!w.hasRiver[c]) continue;
 		for (const p of w.riverPaths(c)) {
@@ -100,28 +100,28 @@ if (want("rivers")) {
 				let cl = 1e9;
 				for (const side of [-1, 1]) {
 					const at = (r) => { const x = norm([d[0] * R + ac[0] * side * r, d[1] * R + ac[1] * side * r, d[2] * R + ac[2] * side * r]); w.surface(x, c, 1); return w.sH; };
-					cl = Math.min(cl, at(bankAt) - p.bed[k]);
+					{ const hb = at(bankAt); if (w.sRivD >= 1) cl = Math.min(cl, hb - p.bed[k]); else inOther++; } // a bank point inside another reach's channel (tight bend, confluence) is water, not a bank
 					if (p.bed[k] > 0.5) { const lc = at(hw + 0.1) - p.bed[k]; levee.push(lc); const k0 = Math.max(k - 1, 0), k1 = Math.min(k + 1, n - 1); if (Math.abs(p.bed[k0] - p.bed[k1]) < 12) leveeCalm.push(lc); } // the shore the grid water meets (calm = away from falls)
 					const he = at(ribHalf); ribV++;           // ribbon edge vertex against the ground under it
 					if (p.bed[k] > 0.5) { if (he < p.bed[k] - 1) ribFloat++; }
 					const hm = at(hw * 0.5); if (p.bed[k] > 0.5 && hm > p.bed[k] + 1) ribBuried++;
 				}
-				if (p.bed[k] > 0.5) clearance.push(cl);
+				if (p.bed[k] > 0.5 && cl < 1e9) clearance.push(cl);
 			}
 		}
 		const dn = w.downhill[c];
 		if (w.hasRiver[dn]) { const A = w.riverPaths(c)[0], B = w.riverPaths(dn).find((x) => Math.hypot(x.pts[0][0] - A.pts[A.pts.length - 1][0], x.pts[0][1] - A.pts[A.pts.length - 1][1], x.pts[0][2] - A.pts[A.pts.length - 1][2]) < 1e-6); if (B) { joins++; maxJoin = Math.max(maxJoin, Math.abs(B.bed[0] - A.bed[A.bed.length - 1])); } }
 	}
-	console.log("rivers:", JSON.stringify({ paths: pathsN, segments: segs, levelRises: rises, maxRiseM: fmt(maxRise), bordersJoined: joins, maxLevelJumpAtBorderM: fmt(maxJoin), bankClearanceM_min_p5_p50: [fmt(q(clearance, 0)), fmt(q(clearance, 0.05)), fmt(q(clearance, 0.5))], negativeClearance: clearance.filter((x) => x < 0).length, leveeClearanceM_min_p5_p50: [fmt(q(levee, 0)), fmt(q(levee, 0.05)), fmt(q(levee, 0.5))], leveeBelowWater: levee.filter((x) => x < 0).length, calmReachSamples: leveeCalm.length, calmLeveeBelowWater: leveeCalm.filter((x) => x < 0).length, calmLeveeMinM: fmt(q(leveeCalm, 0)), waterSlopeMPerUnit_p50_p95_max: [fmt(q(slope, 0.5)), fmt(q(slope, 0.95)), fmt(q(slope, 1))], widthChangePerUnit_p95_max: [fmt(q(widthJump, 0.95)), fmt(q(widthJump, 1))], ribbonEdgeVerts: ribV, ribbonEdgeFloatingAboveGround: ribFloat, channelPointsWhereGroundAboveWater: ribBuried, centreLineDry: centreDry }));
+	console.log("rivers:", JSON.stringify({ paths: pathsN, segments: segs, levelRises: rises, maxRiseM: fmt(maxRise), bordersJoined: joins, maxLevelJumpAtBorderM: fmt(maxJoin), bankClearanceM_min_p5_p50: [fmt(q(clearance, 0)), fmt(q(clearance, 0.05)), fmt(q(clearance, 0.5))], negativeClearance: clearance.filter((x) => x < 0).length, bankSamplesInsideAnotherChannel: inOther, leveeClearanceM_min_p5_p50: [fmt(q(levee, 0)), fmt(q(levee, 0.05)), fmt(q(levee, 0.5))], leveeBelowWater: levee.filter((x) => x < 0).length, calmReachSamples: leveeCalm.length, calmLeveeBelowWater: leveeCalm.filter((x) => x < 0).length, calmLeveeMinM: fmt(q(leveeCalm, 0)), waterSlopeMPerUnit_p50_p95_max: [fmt(q(slope, 0.5)), fmt(q(slope, 0.95)), fmt(q(slope, 1))], widthChangePerUnit_p95_max: [fmt(q(widthJump, 0.95)), fmt(q(widthJump, 1))], ribbonEdgeVerts: ribV, ribbonEdgeFloatingAboveGround: ribFloat, channelPointsWhereGroundAboveWater: ribBuried, centreLineDry: centreDry }));
 	// Water surface against the terrain grid (finest and middle level): vertices of the
 	// drawn mesh that are under river water although they lie outside the channel+bank.
-	for (const lod of [0, 1]) {
-		let nv = 0, wet = 0, wetOutside = 0, n = 0;
+	for (const lod of [0, 1, 2]) {
+		let nv = 0, wet = 0, wetOutside = 0, n = 0, overBank = 0, gap = 0;
 		for (let c = 0; c < w.nCells && n < 10; c++) {
 			if (!w.hasRiver[c] || w.elev[c] < 30) continue; n++;
 			const g = build(c, lod).terrain.geometry, D = g.getAttribute("adata").array, S = g.getAttribute("asurf").array, L = g.getAttribute("ariver").array, C = g.getAttribute("acolor").array;
-			for (let i = 0; i < L.length; i++) { if (C[i * 4 + 3] < -0.5 || L[i] < -9e4) continue; nv++; if (D[i * 4] < L[i]) { wet++; if (S[i * 4 + 3] > 1.6) wetOutside++; } }
+			for (let i = 0; i < L.length; i++) { if (C[i * 4 + 3] < -0.5 || L[i] < -9e4) continue; nv++; const rd = S[i * 4 + 3]; if (D[i * 4] < L[i]) { wet++; if (rd > 1.6) wetOutside++; if (rd >= 1 && rd < 1.3) overBank++; if (rd >= 1.3 && rd < 4 && D[i * 4] < L[i] - 1) gap++; } }
 		}
-		console.log(`river grid lod${lod}:`, JSON.stringify({ cells: n, riverVerts: nv, underWater: wet, underWaterOutsideChannel: wetOutside }));
+		console.log(`river grid lod${lod}:`, JSON.stringify({ cells: n, riverVerts: nv, underWater: wet, underWaterOutsideChannel: wetOutside, waterDrawnOverBank_rivD_1_to_1p3: overBank, dryPitBelowWaterNextToRiver: gap }));
 	}
 }

@@ -806,7 +806,12 @@
 		_carveRivers(d, near, h, mesa) {
 			const x = d[0], y = d[1], z = d[2];
 			const COS_REJECT = Math.cos(0.075 + RIVER_REACH / 100); // paths reach 0.85 of the way to a sea site
+			// Channel interiors win over other reaches' valley walls (so a lower reach
+			// below a fall cannot eat into the pool above it), and outside every channel
+			// the ground stays at least 2 m above the water of any channel whose bank it
+			// is on (bankFloor): water never spills over its banks.
 			let best = 1e9, bestD = 99, bestL = -1e5, bestX = 1e9, bestW = 0;
+			let bestC = 1e9, cD = 99, cL = -1e5, cX = 1e9, cW = 0, bankFloor = -1e9;
 			for (let i = 0; i < near.length; i++) {
 				const r = near[i], s = this.sites[r];
 				if (s[0] * x + s[1] * y + s[2] * z < COS_REJECT) continue;
@@ -831,17 +836,20 @@
 						if (xb > bankW) { const xw = xb - bankW; prof += (420 + 1600 * mesa) * xw + 900 * xw * xw; }
 						if (dist > RIVER_REACH - 0.5) { const e = dist - (RIVER_REACH - 0.5); prof += 30000 * e * e; }
 					}
+					if (dist < hw) { if (prof < bestC) { bestC = prof; cL = wl; cX = dist - hw; cD = dist / hw; cW = hw; } }
+					else if (dist - hw < bankW) bankFloor = Math.max(bankFloor, wl + 2);
 					if (prof < best) { best = prof; bestL = wl; bestX = dist - hw; bestD = dist / hw; bestW = hw; }
 				}
 			}
 			if (best >= 1e9) return h;
+			if (bestC < 1e9) { best = bestC; bestL = cL; bestX = cX; bestD = cD; bestW = cW; bankFloor = -1e9; }
 			this.sRivD = bestD; this.sRivL = bestL; this.sRivX = bestX; this.sRivHW = bestW;
 			// Smooth minimum against the ground so the valley rim is rounded, not creased.
 			const k = 18, hh = clamp(0.5 + 0.5 * (h - best) / k, 0, 1);
 			const out = Math.min(h + (best - h) * hh - k * hh * (1 - hh), h);
 			// Right beside the water the banks are levelled to the profile (also raised).
 			const lev = 1 - smoothstep(0.1, 0.35, bestX);
-			return out + (best - out) * lev;
+			return Math.max(out + (best - out) * lev, bankFloor);
 		}
 
 		// Cheap query: distance (world units) from d to the nearest channel edge of any
