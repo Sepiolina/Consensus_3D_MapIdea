@@ -426,11 +426,11 @@
 		float pebble = 0.0;
 		if (k1 > 0.0) {
 			vec2 wc = worley3(sq * 1100.0);
-			crack = (1.0 - smoothstep(0.0, 0.06, wc.y - wc.x)) * aa_keep(1100.0 * 2.5, px) * smoothstep(0.5, 0.7, vnoise(d * 110.0 + 6.0)) * (1.0 - wet);
+			crack = (1.0 - smoothstep(0.0, 0.06, wc.y - wc.x)) * aa_keep(1100.0 * 2.5, px) * smoothstep(0.62, 0.78, vnoise(d * 110.0 + 6.0)) * (1.0 - wet);
 			vec2 wp = worley3(sq * 1500.0 + 5.0);
-			pebble = (1.0 - smoothstep(0.1, 0.22, wp.x)) * aa_keep(1500.0 * 3.0, px) * step(0.6, hash13(floor(sq * 1500.0 + 5.0) + 3.0));
+			pebble = (1.0 - smoothstep(0.1, 0.22, wp.x)) * aa_keep(1500.0 * 3.0, px) * smoothstep(0.55, 0.75, vnoise(sq * 400.0 + 9.0));
 		}
-		earth *= 1.0 - 0.25 * crack;
+		earth *= 1.0 - 0.14 * crack;
 		earth = mix(earth, vec3(0.58, 0.52, 0.42), pebble * 0.5);
 		// Grass: the climate colour, darker in dense clumps, lit tips along the strokes.
 		vec3 grassc = mix(col, C_GRASS * 1.1, 0.4 * (1.0 - wet)) * mix(0.7, 1.12, smoothstep(0.35, 0.8, grassH)) * (1.0 + tuft * 0.3);

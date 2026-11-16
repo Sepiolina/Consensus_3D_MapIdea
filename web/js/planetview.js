@@ -383,8 +383,8 @@
 			this.vegCells = new Map(); this.vegDirty = false; this._vegTime = 0;
 			// [name, geometry, leaf colour, wood colour, kind id, global instance cap]
 			const kinds = [
-				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 5000],
-				["broad1", G.broadleaf(23, true), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 5000],
+				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 3500],
+				["broad1", G.broadleaf(23, true), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 3500],
 				["conifer", G.conifer(5), [0.08, 0.14, 0.08], [0.20, 0.14, 0.10], 1, 6000],
 				["acacia", G.acacia(7), [0.26, 0.27, 0.11], [0.26, 0.19, 0.12], 2, 5000],
 				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3, 3000],
@@ -393,7 +393,7 @@
 				["rock0", G.rock(13), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 2500],
 				["rock1", G.rock(29, 0), [0.46, 0.40, 0.33], [0.40, 0.35, 0.30], 6, 4000],
 				["snag", G.snag(17), [0.2, 0.2, 0.1], [0.36, 0.30, 0.24], 7, 1500],
-				["blob", G.blob(), [0, 0, 0], [0, 0, 0], 8, 30000],
+				["blob", G.blob(), [0, 0, 0], [0, 0, 0], 8, 14000],
 			];
 			this.vegKinds = kinds.map(([name, base, leaf, wood, kind, limit]) => {
 				const geo = new THREE.InstancedBufferGeometry();
