@@ -414,7 +414,7 @@
 		vec3 ay = cross(up, ax);
 		vec3 sp = vec3(dot(d, ax) * 2000.0, dot(d, ay) * 650.0, dot(d, up) * 650.0);
 		float tuft = pow(ridge(sp), 3.0) * aa_keep(2000.0 * 1.6, px);
-		float grassH = clumpH * 0.8 + (n_brush - 0.5) * 0.35 + tuft * 0.1;
+		float grassH = clumpH * 0.85 + (n_mid - 0.5) * 0.25 + tuft * 0.06; // only coarse terms decide the edge: no speckle
 		float cover = clamp(0.2 + 0.85 * wet + (n_mid - 0.5) * 0.5, 0.0, 1.0);
 		float path = smoothstep(0.955, 0.99, ridge(sq * 75.0 + 3.3)) * smoothstep(0.55, 0.75, vnoise(d * 30.0 + 2.0)) * k1 * (1.0 - wet * 0.8) * (1.0 - smoothstep(0.03, 0.1, steep));
 		float edgew = 0.045 + 0.25 * (1.0 - k2);   // ragged but crisp up close, soft far away

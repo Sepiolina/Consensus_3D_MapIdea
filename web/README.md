@@ -117,3 +117,27 @@ and the checkbox still toggle them); the clicked-cell outline is unchanged.
 Porting notes: all GLSL uses float literals and increasing-edge `smoothstep`; the
 only screen-space derivatives are `dFdx` / `dFdy` / `fwidth` (same names in Godot);
 `textureLod` is only in the globe shader.
+
+## Second pass (closer to the target art)
+
+- **Ground** (`terrainFrag`, helpers `worley3()` and `ridge()` in `COMMON`): grass and
+  bare earth now interlock through a height-like mask (warped clumps + directional
+  tuft strokes from stretched ridged noise) cut by a narrow threshold, so grass breaks
+  into earth with ragged edges. Earth carries cellular cracks (Worley F2-F1) in dry
+  patches, pebbles (Worley F1), and lighter trampled tracks (ridged noise lines);
+  sand near water has ripples. Each layer fades by pixel footprint and the threshold
+  softens with distance, so the map view stays calm. The same masks drive the bump.
+- **Cliffs**: `levelHeight()` applies its smoothstep twice (flat benches, rounded lip,
+  near-vertical riser middle); warm dry country of any bedrock now gets tablelands.
+  Rock gets vertical fluting, hard/soft ledges, a lit caprock lip from convex
+  curvature, dark contact at concave feet, and on high steep faces rock shows through
+  the snow. (Ledges and fluting are albedo only: in a screen-space bump they alias.)
+- **Trees**: lobed off-centre broadleaf crowns (two variants), bare snags in dry
+  country, palms with arching tapered fronds, warm rim light and stronger leaf
+  translucency, and a soft contact-shadow disc under every tree, shrub and boulder
+  (one extra instanced, blended draw call). More shrubs along rivers and in hollows.
+- **Light**: `main.js` `startTime()` starts the demo at the morning time when the sun is
+  about 30 degrees above the default focus; time then runs normally.
+- **Water**: river width varies along the course with a noise of position (pools and
+  narrows), less saturated turquoise; sea surf only on real shores, flooded plains are
+  more opaque instead of milky.
