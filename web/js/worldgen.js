@@ -427,9 +427,13 @@
 		riverPaths(c) {
 			const out = [];
 			if (!this.hasRiver[c]) return out;
-			const pc = this.sites[c], dn = this.downhill[c], mOut = norm(add(pc, this.sites[dn])), w1 = riverWidth(this.flux[c]), ups = this.riverUp[c];
+			const pc = this.sites[c], dn = this.downhill[c];
+			// A river that reaches the sea runs on well into the sea cell, so its channel
+			// always meets open water instead of ending in a pit if the coast lies beyond
+			// the cell border.
+			const mOut = this.elev[dn] <= 0 ? norm(lerp3(pc, this.sites[dn], 0.85)) : norm(add(pc, this.sites[dn])), w1 = riverWidth(this.flux[c]), ups = this.riverUp[c];
 			const bed = this.riverBed, bc = bed ? bed[c] : 0;
-			const bOut = bed ? (this.hasRiver[dn] ? (bc + bed[dn]) * 0.5 : Math.min(bc, -4)) : 0;
+			const bOut = bed ? (this.hasRiver[dn] ? (bc + bed[dn]) * 0.5 : Math.min(bc, 0)) : 0;
 			const beds = (n, b0, bm, b1, headwater) => {
 				const a = [];
 				for (let k = 0; k <= n; k++) { const t = k / n; a.push(headwater ? b0 + (b1 - b0) * t : t < 0.5 ? b0 + (bm - b0) * t * 2 : bm + (b1 - bm) * (t * 2 - 1)); }
@@ -533,6 +537,9 @@
 				this.surface(sites[c], c, 1);
 				let b = this.sH - 14;
 				for (const j of this.riverUp[c]) b = Math.min(b, bed[j]);
+				// Inland water stays above the sea: only the mouth itself reaches 0 m, so no
+				// channel inland dips under sea level (which showed as sea "ponds").
+				b = Math.max(b, 4);
 				bed[c] = b;
 			}
 			this._noRiver = false;
@@ -660,7 +667,7 @@
 			h -= gA * gully;
 			// Land cells keep their lowlands above the sea: a soft floor just above 0 m, so
 			// coastlines follow the cells instead of breaking into lagoons.
-			if (H0 > 0 && h < 8) { const k = smoothstep(0, 60, H0); h += (8 + (h - 8) * 0.12 - h) * k; }
+			if (H0 > 0 && h < 8) { const k = smoothstep(0, 12, H0); h += (8 + (h - 8) * 0.12 - h) * k; }
 			if (q === 1) h += 5 * n3(x * 330 + 1.5, y * 330 + 7.5, z * 330 + 3.5) * land;
 			// 6. River channels.
 			this.sRivD = 99; this.sRivL = -1e5;
@@ -682,7 +689,7 @@
 		// steepness grows in mesa country (canyons). Confluences take the lowest profile.
 		_carveRivers(d, near, h, mesa) {
 			const x = d[0], y = d[1], z = d[2];
-			const COS_REJECT = Math.cos(0.05 + RIVER_REACH / 100);
+			const COS_REJECT = Math.cos(0.075 + RIVER_REACH / 100); // paths reach 0.85 of the way to a sea site
 			let best = 1e9, bestD = 99, bestL = -1e5, bestX = 1e9;
 			for (let i = 0; i < near.length; i++) {
 				const r = near[i], s = this.sites[r];

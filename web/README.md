@@ -141,3 +141,35 @@ only screen-space derivatives are `dFdx` / `dFdy` / `fwidth` (same names in Godo
 - **Water**: river width varies along the course with a noise of position (pools and
   narrows), less saturated turquoise; sea surf only on real shores, flooded plains are
   more opaque instead of milky.
+
+## Third pass: fixes and the HD-2D strategic layer
+
+Fixes: the ground's pixel footprint is now the longer axis of the pixel
+(`max(length(dFdx), length(dFdy))`), so fine layers fade early at grazing angles;
+only smooth, coarse terms feed the screen-space bump (fine cellular/ridged/ripple
+terms there broke into 2x2 checker blocks). Inland river beds stay at least 4 m above
+the sea and rivers that reach the sea run on into the sea cell (no pits or inland
+"ponds" at river mouths); land near the coast keeps a firmer floor above 0 m. Above
+the tree line and in cold barrens the ground is grey-brown scree and crag rock (no
+grass painting, no tufts or shrubs), with snow only on gentle slopes and ledges.
+Mid-distance trees are thinner and only the finest cells get contact-shadow discs.
+
+**Strategic layer** (`js/strategic.js`, toggled by the "Strategic layer" checkbox):
+the terrain is the stage and everything on it is a 2D sprite. Data is derived only:
+settlements from `pop` (village / town / port), resource icons (wheat, mine, forest,
+fish) and landmark "special trees" (great oak, palms, dead tree, standing stones) by
+biome, a few demo army tokens next to populated cells and one dotted movement path.
+Rendering is ONE instanced billboard batch plus ONE batch of flat contact-shadow discs
+(same instances, `flat_mode`), textured from ONE atlas painted at startup with the
+Canvas 2D API (outlined illustrated icons, alpha-tested so there are no halos). Sprites
+sit on the same displaced surface as the trees (`surface()` + `disp()` + `detail`),
+hide when drowned, take only a mild part of the scene light, and follow a semantic
+zoom: nothing on the globe, settlements at map altitude, armies, resources and
+landmarks up close, growing in rather than popping. Army strength plates are HTML
+overlays, decluttered and faded by distance. In Godot: `MultiMeshInstance3D` with a
+billboard `ShaderMaterial`, the atlas drawn into an `Image` at startup, plates as
+`Label`s in a `CanvasLayer`.
+
+**Map lenses** ("Map lens" selector): Natural, Elevation, Temperature, Rainfall,
+Biome. `apply_lens()` in `COMMON` tints the land albedo before lighting, on the 3D
+terrain and the globe, so relief shading stays visible.

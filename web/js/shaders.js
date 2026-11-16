@@ -26,6 +26,7 @@
 	uniform mat4 shadow_matrix;
 	uniform float shadow_on;
 	uniform float shadow_texel;   // world units per shadow texel
+	uniform float lens;           // map lens: 0 natural, 1 elevation, 2 temperature, 3 rainfall, 4 biome
 
 	float disp(float h) {
 		if (h >= 0.0) return RELIEF_MAX * (1.0 - exp(-h / RELIEF_H0));
@@ -152,6 +153,34 @@
 		col = mix(col, mix(rock, C_GREY, 0.4), smoothstep(1900.0, 3600.0, h) * 0.85);
 		col = mix(col, C_SNOW, snow_cover(tnow, d));
 		return col * (0.84 + 0.32 * big);
+	}
+	// Map lenses (choropleth tints over the land albedo; lighting and relief shading
+	// still apply on top, so the shape of the land stays readable).
+	vec3 ramp3(vec3 a, vec3 b, vec3 c, float t) {
+		return t < 0.5 ? mix(a, b, t * 2.0) : mix(b, c, t * 2.0 - 1.0);
+	}
+	vec3 apply_lens(vec3 col, float h, float tmean, float tnow, float precip) {
+		if (lens < 0.5) return col;
+		vec3 tint;
+		if (lens < 1.5) {        // elevation: hypsometric greens, tans, browns, white
+			float e = clamp(h / 4000.0, 0.0, 1.0);
+			tint = e < 0.5 ? ramp3(vec3(0.30, 0.52, 0.30), vec3(0.78, 0.74, 0.46), vec3(0.62, 0.44, 0.28), e * 2.0) : mix(vec3(0.62, 0.44, 0.28), vec3(0.95, 0.95, 0.95), e * 2.0 - 1.0);
+		} else if (lens < 2.5) { // temperature (current): blue, pale, red
+			float t = clamp((tnow + 20.0) / 55.0, 0.0, 1.0);
+			tint = t < 0.5 ? ramp3(vec3(0.18, 0.30, 0.70), vec3(0.42, 0.70, 0.86), vec3(0.94, 0.92, 0.78), t * 2.0) : ramp3(vec3(0.94, 0.92, 0.78), vec3(0.94, 0.62, 0.30), vec3(0.74, 0.20, 0.16), t * 2.0 - 1.0);
+		} else if (lens < 3.5) { // rainfall: brown to teal to deep blue
+			float p = clamp(sqrt(max(precip, 0.0) / 3500.0), 0.0, 1.0);
+			tint = p < 0.5 ? ramp3(vec3(0.62, 0.42, 0.22), vec3(0.86, 0.80, 0.52), vec3(0.42, 0.70, 0.40), p * 2.0) : ramp3(vec3(0.42, 0.70, 0.40), vec3(0.22, 0.60, 0.64), vec3(0.18, 0.30, 0.66), p * 2.0 - 1.0);
+		} else {                 // biome: Whittaker classes from climate, flat colours
+			if (tmean < -10.0) tint = vec3(0.92, 0.94, 0.98);
+			else if (tmean < 0.0) tint = vec3(0.62, 0.66, 0.58);
+			else if (tmean < 6.0) tint = precip > 300.0 ? vec3(0.26, 0.44, 0.36) : vec3(0.70, 0.66, 0.56);
+			else if (tmean < 20.0) tint = precip < 250.0 ? vec3(0.86, 0.74, 0.46) : precip < 550.0 ? vec3(0.78, 0.76, 0.40) : precip < 900.0 ? vec3(0.64, 0.66, 0.30) : precip < 1800.0 ? vec3(0.32, 0.56, 0.28) : vec3(0.18, 0.46, 0.36);
+			else tint = precip < 300.0 ? vec3(0.90, 0.70, 0.40) : precip < 1000.0 ? vec3(0.82, 0.70, 0.30) : precip < 1800.0 ? vec3(0.44, 0.64, 0.22) : vec3(0.16, 0.50, 0.20);
+		}
+		// Keep some of the natural value pattern so texture and relief still read.
+		float l = dot(col, vec3(0.3, 0.55, 0.15)) / 0.35;
+		return tint * 0.6 * mix(1.0, clamp(l, 0.6, 1.4), 0.5);
 	}
 	vec3 water_color(float depth, float tnow) {
 		// Turquoise over sand, sea-green over the shelf, through dark teal, to slate-navy.
@@ -301,7 +330,7 @@
 		float spec = 0.05;
 		vec3 emi = vec3(0.0);
 		if (h > sea_level) {
-			col = land_albedo(h, tnow, tmean, precip, d, vec3(0.46, 0.42, 0.38), 2.0);
+			col = apply_lens(land_albedo(h, tnow, tmean, precip, d, vec3(0.46, 0.42, 0.38), 2.0), h, tmean, tnow, precip);
 			vec3 river = tnow < -4.0 ? vec3(0.82, 0.90, 0.96) : vec3(0.12, 0.40, 0.40);
 			col = mix(col, river, smoothstep(0.15, 0.6, msk.g) * 0.9);
 			emi = night_lights(d, msk.b);
@@ -369,7 +398,9 @@
 		float tnow = temp_now(tmean, v_data.z, d);
 		float relief = clamp(detail * 1.5, 0.0, 1.0);
 		float px_dir = length(fwidth(v_dir)) * PLANET_R;
-		float px_pos = length(fwidth(v_wpos));
+		// Footprint = the longer axis of the pixel on the ground, so layers fade early
+		// at grazing angles (where the short axis would say "still sharp").
+		float px_pos = max(length(dFdx(v_wpos)), length(dFdy(v_wpos))) * 1.2;
 		float px = skirt ? px_dir : px_pos;
 		vec3 up = normalize(v_wpos);
 		vec3 dpx = dFdx(v_wpos);
@@ -417,7 +448,7 @@
 		float grassH = clumpH * 0.85 + (n_mid - 0.5) * 0.25 + tuft * 0.06; // only coarse terms decide the edge: no speckle
 		float cover = clamp(0.2 + 0.85 * wet + (n_mid - 0.5) * 0.5, 0.0, 1.0);
 		float path = smoothstep(0.955, 0.99, ridge(sq * 75.0 + 3.3)) * smoothstep(0.55, 0.75, vnoise(d * 30.0 + 2.0)) * k1 * (1.0 - wet * 0.8) * (1.0 - smoothstep(0.03, 0.1, steep));
-		float edgew = 0.045 + 0.25 * (1.0 - k2);   // ragged but crisp up close, soft far away
+		float edgew = max(0.04, fwidth(grassH) * 1.5) + 0.25 * (1.0 - k2); // analytic AA of the edge   // ragged but crisp up close, soft far away
 		float grass = smoothstep(1.0 - cover - edgew, 1.0 - cover + edgew, grassH) * (1.0 - path);
 		grass = mix(1.0, grass, relief * (1.0 - snow));
 		// Earth: ochre, with cracks and scattered pebbles.
@@ -433,10 +464,16 @@
 		earth *= 1.0 - 0.14 * crack;
 		earth = mix(earth, vec3(0.58, 0.52, 0.42), pebble * 0.5);
 		// Grass: the climate colour, darker in dense clumps, lit tips along the strokes.
-		vec3 grassc = mix(col, C_GRASS * 1.1, 0.4 * (1.0 - wet)) * mix(0.7, 1.12, smoothstep(0.35, 0.8, grassH)) * (1.0 + tuft * 0.3);
+		vec3 grassc = mix(col, C_GRASS * 1.1, 0.4 * (1.0 - wet)) * mix(0.7, 1.12, smoothstep(0.35, 0.8, grassH)) * (1.0 + tuft * 0.15);
 		grassc = mix(grassc, C_FOREST * 1.15, smoothstep(0.62, 0.85, clumpH) * wet * 0.55);
-		col = mix(col, mix(earth, grassc, grass), relief * (1.0 - snow));
-		float groundBump = grass * (grassH * 0.8 + tuft * 0.5) + (1.0 - grass) * (pebble * 0.6 - crack * 0.5 + n_brush * 0.2);
+		// Above the tree line and in cold barrens: grey-brown scree and rock, no grass.
+		float alpine = max(smoothstep(1700.0, 2500.0, h), 1.0 - smoothstep(-6.0, 1.0, tmean));
+		vec3 talus = mix(mix(v_color.rgb, C_GREY, 0.6), vec3(0.42, 0.37, 0.31), n_mid) * (0.85 + 0.3 * n_brush);
+		col = mix(col, mix(earth, grassc, grass), relief * (1.0 - snow) * (1.0 - alpine));
+		col = mix(col, talus, alpine * relief);
+		// Only smooth, coarse terms go into the screen-space bump: fine cellular or ridged
+		// terms there break into 2x2 checker blocks at grazing angles.
+		float groundBump = grass * clumpH * 0.8 + (1.0 - grass) * n_brush * 0.3;
 		float clump = clumpH;
 
 		// Dry washes: sand and gravel in gully floors.
@@ -447,7 +484,7 @@
 		float rivl = v_rivl + flood * 45.0;
 		float bank = (1.0 - smoothstep(1.3, 2.6, rivd + (n_mid - 0.5) * 1.0)) * relief;
 		// Wind and current ripples on sand.
-		float rip = (sin(dot(d, normalize(vec3(0.7, 0.2, 0.68))) * 9000.0 + vnoise(d * 500.0) * 9.0) * 0.5 + 0.5) * k2;
+		float rip = (sin(dot(d, normalize(vec3(0.7, 0.2, 0.68))) * 9000.0 + vnoise(d * 500.0) * 9.0) * 0.5 + 0.5) * aa_keep(3600.0, px);
 		float sandy = max(max(bank, wash), (1.0 - smoothstep(6.0, 22.0, above)) * step(0.0, above) * relief);
 		col = mix(col, C_SAND * (0.9 + 0.2 * n_brush) * (0.94 + 0.12 * rip), bank * 0.9);
 		col *= 1.0 + (rip - 0.5) * 0.08 * sandy;
@@ -474,6 +511,8 @@
 		vec3 red = mix(mix(C_RED_DARK, C_RED, 0.55), mix(C_RED, C_RED_LIGHT, tone * 0.8), strata);
 		vec3 grey = mix(mix(v_color.rgb, C_GREY, 0.45), C_GREY * 1.12, strata * 0.6) * (0.85 + 0.25 * tone);
 		vec3 rockc = mix(grey, red, clamp(warm_dry * 0.85 + mesa * 0.35, 0.0, 1.0) * (1.0 - smoothstep(1800.0, 3000.0, h) * 0.7));
+		float crag = max(smoothstep(1700.0, 2500.0, h), 1.0 - smoothstep(-6.0, 1.0, tmean));
+		rockc = mix(rockc, grey * vec3(1.0, 0.95, 0.88), crag);   // cold high crags: grey-brown
 		float streak = fbm_aa(vec3(d * 700.0), px * 700.0 / PLANET_R);
 		// Vertical fluting and cracks: ridged noise of the direction alone, so it runs
 		// straight down a wall; hard/soft layers as ledges (smooth bands for the bump).
@@ -488,17 +527,18 @@
 		col = mix(col, mix(rockc, vec3(0.56, 0.46, 0.34), 0.5) * (0.85 + 0.3 * n_brush), scree * (0.35 + 0.4 * mesa));
 
 		// Snow on top of everything but sheer walls.
-		col = mix(col, C_SNOW * (0.94 + 0.08 * n_brush), snow * (1.0 - rocky * smoothstep(0.12, 0.3, steep) * 0.9) * relief);
+		col = mix(col, C_SNOW * (0.94 + 0.08 * n_brush), snow * (1.0 - smoothstep(0.1, 0.24, steep + (n_mid - 0.5) * 0.08)) * relief);
 		col = mix(col, land_albedo(h, tnow, tmean, precip, d, v_color.rgb, 2.0), 1.0 - relief);
 		// Drowned ground turns to wet sea bed, darkening with depth; occluded hollows a
 		// touch darker; cloud shadows.
+		if (h > sea_level) col = apply_lens(col, h, tmean, tnow, precip);
 		col = mix(col, vec3(0.42, 0.40, 0.30), smoothstep(0.0, 30.0, sea_level - h) * 0.7);
 		col *= mix(1.0, 0.5, smoothstep(0.0, 800.0, sea_level - h));
 		col *= mix(0.88, 1.0, ao);
 		col *= 1.0 - 0.2 * cloud_cover(d) * relief;
 
 		// Bump the normal with the ground detail (screen-space gradient of a height).
-		float bump = (skirt ? 0.0 : 1.0) * relief * (rocky * streak * 0.35 + (1.0 - rocky) * (groundBump * (1.0 - sandy) + rip * 0.4 * sandy));
+		float bump = (skirt ? 0.0 : 1.0) * relief * (rocky * streak * 0.35 + (1.0 - rocky) * (groundBump * (1.0 - sandy * 0.7) ));
 		float useF = smoothstep(0.18, 0.42, fslope - sslope) * relief;
 		vec3 n = normalize(mix(sn, fn, useF));
 		vec3 r1 = cross(dpy, n);
@@ -747,6 +787,77 @@
 		float rim = pow(1.0 - max(dot(n, vv), 0.0), 3.0) * max(dot(n, sun_dir_world) + 0.3, 0.0);
 		if (part > 0.5 && part < 1.5 || part > 2.5) c += vec3(1.0, 0.75, 0.45) * sun_color * rim * 0.18 * shade;
 		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), 1.0);
+	}`;
+
+	// ---------------------------------------------------------------- HD-2D sprites (strategic.js)
+	// One instanced quad batch. ipos = (dir xyz, height m); iinfo = (atlas cell, size,
+	// zoom max, -); icol = (tint rgb, glow). Upright billboards pivoting at their base,
+	// sitting on the displaced surface like the trees; flat_mode draws the same
+	// instances as soft contact-shadow discs on the ground.
+	S.spriteVert = S.COMMON + `
+	uniform float cam_alt;
+	uniform float layer_on;
+	uniform float flat_mode;
+	attribute vec4 ipos;
+	attribute vec4 iinfo;
+	attribute vec4 icol;
+	varying vec2 v_uv;
+	varying vec2 v_local;
+	varying vec4 v_col;
+	varying vec3 v_wpos;
+	void main() {
+		vec3 dir = normalize(ipos.xyz);
+		// Semantic zoom: grow in below the item's altitude band (no popping).
+		float vis = (1.0 - smoothstep(iinfo.z * 0.75, iinfo.z, cam_alt)) * smoothstep(0.3, 0.8, detail) * layer_on;
+		if (ipos.w < sea_level + 2.0) vis = 0.0; // drowned
+		float size = iinfo.y * clamp(cam_alt / 10.0, 0.6, 2.4) * vis;
+		vec3 base = dir * (PLANET_R + disp(ipos.w) * detail);
+		vec3 wb = (modelMatrix * vec4(base, 1.0)).xyz;
+		vec3 up = normalize(mat3(modelMatrix) * dir);
+		vec3 tocam = normalize(cameraPosition - wb);
+		vec3 right = cross(up, tocam);
+		right = length(right) < 1e-3 ? normalize(cross(up, vec3(0.0, 1.0, 0.0))) : normalize(right);
+		// Half way between standing upright and facing the camera: readable from a
+		// steep map view, still planted on the ground up close.
+		vec3 vup = normalize(up + cross(tocam, right));
+		vec3 wp;
+		if (flat_mode > 0.5) {
+			vec3 t2 = normalize(cross(up, right));
+			wp = wb + up * 0.004 + (right * (position.x - 0.5) + t2 * (position.y - 0.5)) * size * 0.8;
+		} else {
+			wp = wb + right * (position.x - 0.5) * size + vup * position.y * size;
+		}
+		float cell = flat_mode > 0.5 ? 13.0 : iinfo.x;
+		vec2 c0 = vec2(mod(cell, 8.0), floor(cell / 8.0));
+		v_uv = vec2((c0.x + position.x) / 8.0, 1.0 - (c0.y + 1.0 - position.y) / 8.0);
+		v_local = position.xy;
+		v_col = icol;
+		v_wpos = wp;
+		if (flat_mode > 0.5 && icol.w > 0.5) wp = vec3(0.0); // glowing dots cast no shadow disc
+		gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+	}`;
+	S.spriteFrag = S.COMMON + `
+	uniform sampler2D atlas;
+	uniform float flat_mode;
+	varying vec2 v_uv;
+	varying vec2 v_local;
+	varying vec4 v_col;
+	varying vec3 v_wpos;
+	void main() {
+		vec4 t = texture2D(atlas, v_uv);
+		float day = smoothstep(-0.12, 0.2, dot(normalize(v_wpos), sun_dir_world));
+		if (flat_mode > 0.5) {
+			gl_FragColor = vec4(0.0, 0.0, 0.0, t.a * 0.35 * day);
+			return;
+		}
+		// Alpha test against an outlined icon: crisp edges, no blending halos.
+		if (t.a < 0.5) discard;
+		vec3 c = t.rgb * v_col.rgb;
+		if (v_col.w > 0.5) { gl_FragColor = vec4(c, 1.0); return; } // glowing path dots
+		// Only a mild response to the scene light, so icons stay readable.
+		float low = 1.0 - smoothstep(0.05, 0.6, dot(normalize(v_wpos), sun_dir_world));
+		c *= mix(0.32, 1.0, day) * mix(vec3(1.0), vec3(1.06, 0.97, 0.86), low * day);
+		gl_FragColor = vec4(c, 1.0);
 	}`;
 
 	// ---------------------------------------------------------------- clouds

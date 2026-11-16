@@ -46,7 +46,7 @@
 				sea_level: { value: 0 }, detail: { value: 0 }, season: { value: 0 },
 				sun_dir_local: { value: new THREE.Vector3(1, 0, 0) }, sun_dir_world: { value: new THREE.Vector3(1, 0, 0) },
 				sun_color: { value: new THREE.Vector3(1, 0.96, 0.9) }, wall_time: { value: 0 },
-				flood: { value: 0 }, border_strength: { value: 0 },
+				flood: { value: 0 }, border_strength: { value: 0 }, lens: { value: 0 },
 				shadow_map: { value: null }, shadow_matrix: { value: new THREE.Matrix4() }, shadow_on: { value: 0 }, shadow_texel: { value: 0.01 },
 			});
 			const mat = (vs, fs, extra, opts) => new THREE.ShaderMaterial(Object.assign({ vertexShader: vs, fragmentShader: fs, uniforms: Object.assign({}, u, extra || {}) }, opts || {}));
@@ -383,8 +383,8 @@
 			this.vegCells = new Map(); this.vegDirty = false; this._vegTime = 0;
 			// [name, geometry, leaf colour, wood colour, kind id, global instance cap]
 			const kinds = [
-				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 3500],
-				["broad1", G.broadleaf(23, true), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 3500],
+				["broad0", G.broadleaf(11), [0.17, 0.22, 0.08], [0.24, 0.17, 0.11], 0, 2600],
+				["broad1", G.broadleaf(23, true), [0.20, 0.24, 0.09], [0.24, 0.17, 0.11], 0, 2600],
 				["conifer", G.conifer(5), [0.08, 0.14, 0.08], [0.20, 0.14, 0.10], 1, 6000],
 				["acacia", G.acacia(7), [0.26, 0.27, 0.11], [0.26, 0.19, 0.12], 2, 5000],
 				["palm", G.palm(3), [0.20, 0.27, 0.09], [0.36, 0.29, 0.20], 3, 3000],
@@ -487,7 +487,7 @@
 				lists[kind].push(p.d[0], p.d[1], p.d[2], h, rng.randf() * 6.2832, scale, lean, rng.randf(), p.t, p.amp * hemi, p.ao, extra);
 				// Soft contact shadow under everything that stands on the ground.
 				const r = BLOB_R[kind];
-				if (r) lists[K.blob].push(p.d[0], p.d[1], p.d[2], h, 0, scale * r, 0, 0.5, p.t, 0, p.ao, 0);
+				if (r && fine) lists[K.blob].push(p.d[0], p.d[1], p.d[2], h, 0, scale * r, 0, 0.5, p.t, 0, p.ao, 0);
 			};
 			const area = (fine ? 1 : 1) * 1.0;
 			// Trees.
@@ -500,7 +500,7 @@
 				const riparian = p.rivD < 4.5 ? (1 - wet) * 0.3 : 0;
 				let dens = 1.5 * Math.pow(wet, 1.6) * smoothstep(-0.25, 0.25, clump) + riparian * smoothstep(-0.3, 0.2, clump) + 0.008;
 				dens *= 1 - 0.7 * p.mesa * smoothstep(0.95, 0.85, p.up);
-				if (!fine) dens *= 0.25;
+				if (!fine) dens *= 0.14;
 				if (rng.randf() > dens) continue;
 				let kind;
 				const tm = p.t;
@@ -529,7 +529,7 @@
 				// Shrubs: everywhere vegetated, clustered, denser by water.
 				for (let k = 0; k < 900; k++) {
 					const p = interp(), d = p.d;
-					if (p.h < 18 || p.up < 0.8 || p.rivD < 1.3 || p.t < -8) continue;
+					if (p.h < 18 || p.h > 2300 || p.up < 0.8 || p.rivD < 1.3 || p.t < -3) continue;
 					const wet = smoothstep(150, 1300, p.p);
 					const clump = n3(d[0] * 90 + 1.9, d[1] * 90 + 6.1, d[2] * 90 + 3.3) + 0.6 * n3(d[0] * 260 + 4.4, d[1] * 260 + 8.8, d[2] * 260 + 2.2);
 					const dens = (0.1 + 0.55 * wet) * smoothstep(-0.3, 0.4, clump) + (p.rivD < 5 ? 0.55 : 0) + 0.35 * smoothstep(0.05, 0.4, p.curv);
@@ -539,7 +539,7 @@
 				// Grass tufts: dry grassland and steppe.
 				for (let k = 0; k < 2600; k++) {
 					const p = interp(), d = p.d;
-					if (p.h < 22 || p.up < 0.85 || p.rivD < 2.2 || p.t < -6) continue;
+					if (p.h < 22 || p.h > 2300 || p.up < 0.85 || p.rivD < 2.2 || p.t < -3) continue;
 					const wet = smoothstep(150, 1300, p.p);
 					const clump = n3(d[0] * 200 + 7.3, d[1] * 200 + 3.9, d[2] * 200 + 5.1);
 					const dens = (0.75 - 0.55 * wet) * smoothstep(-0.2, 0.3, clump) * smoothstep(80, 300, p.p);

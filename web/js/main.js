@@ -12,11 +12,11 @@
 
 	const st = {
 		seed: 20261, tDays: 0, timeSpeed: 0.05, paused: false, spin: 0, frameAngle: 0,
-		seaLevel: 0, flood: 0, borders: false, season: 0, seasonRising: true, wall: 0,
+		seaLevel: 0, flood: 0, borders: false, strategic: true, lens: 0, season: 0, seasonRising: true, wall: 0,
 		alt: 330, altTarget: 330, focus: new THREE.Vector3(0.75, 0.45, 0.48).normalize(), heading: 0, pitchUser: 0,
 		selected: -1, ready: false, generating: false, fps: 60, buildBudget: 7,
 	};
-	let world, system, view, systemRoot, orbitRoot, starMesh, corona, moon, bodies = [], labels = [];
+	let world, system, view, strat, stratView, systemRoot, orbitRoot, starMesh, corona, moon, bodies = [], labels = [];
 
 	// ---------------------------------------------------------------- renderer and fixed scene
 	const canvas = $("stage");
@@ -62,6 +62,7 @@
 		if (st.generating) return;
 		st.generating = true; st.ready = false;
 		$("loading").hidden = false; $("cell").hidden = true;
+		if (stratView) { stratView.dispose(); stratView = null; }
 		if (view) { scene.remove(view.group); view.dispose(); view = null; }
 		if (systemRoot) { scene.remove(systemRoot); systemRoot = null; }
 		for (const l of labels) l.el.remove();
@@ -81,6 +82,8 @@
 		world.bakeFinish();
 
 		view = new POC.PlanetView(world);
+		strat = new POC.Strategic(world);
+		stratView = new POC.StrategicView(strat, view);
 		scene.add(view.group);
 		buildSystem();
 		fillStats();
@@ -196,6 +199,8 @@
 	$("sea").addEventListener("input", (e) => (st.seaLevel = +e.target.value));
 	$("flood").addEventListener("input", (e) => (st.flood = +e.target.value));
 	$("borders").addEventListener("change", (e) => (st.borders = e.target.checked));
+	$("strategic").addEventListener("change", (e) => (st.strategic = e.target.checked));
+	$("lens").addEventListener("change", (e) => (st.lens = +e.target.value));
 	$("zoom").addEventListener("input", (e) => (st.altTarget = Math.pow(10, +e.target.value)));
 	$("pause").addEventListener("click", () => togglePause());
 	$("regen").addEventListener("click", () => { st.seed++; generate(); });
@@ -324,6 +329,7 @@
 		sh.sun_dir_local.value.copy(sunLocal); sh.sun_dir_world.value.copy(sunDir);
 		sh.border_strength.value = st.borders ? 1 : 0;
 		view.setBorders(st.borders);
+		sh.lens.value = st.lens;
 		view.globeMat.uniforms.border_strength.value = st.borders ? 0.22 : 0;
 		atmoMat.uniforms.sun_dir_world.value.copy(sunDir);
 
@@ -356,6 +362,7 @@
 		corona.position.copy(starPos); corona.quaternion.copy(camera.quaternion); corona.scale.setScalar(glow);
 
 		renderer.render(scene, camera);
+		stratView.update(camera, st.alt, st.strategic, canvas, view.group.quaternion);
 		updateLabels();
 		hudTimer -= delta;
 		if (hudTimer <= 0) { hudTimer = 0.15; updateHud(detail); }
@@ -378,7 +385,7 @@
 	}
 
 	// Small test/automation hook.
-	POC.app = { st, generate, renderer, camera, get view() { return view; }, get world() { return world; }, get system() { return system; } };
+	POC.app = { st, generate, renderer, camera, get strat() { return stratView; }, get view() { return view; }, get world() { return world; }, get system() { return system; } };
 
 	if (window.matchMedia("(max-width: 720px)").matches) for (const d of document.querySelectorAll("details.panel")) d.open = false;
 	resize();
