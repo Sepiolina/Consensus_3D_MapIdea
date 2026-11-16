@@ -857,9 +857,9 @@
 		} else {
 			// Rock: the local rock colour (moist = redness, as in terrainFrag: grey-brown
 			// to red sandstone), one tone per facet and per boulder; flat-shaded.
-			vec3 grey = C_GREY * vec3(1.02, 0.98, 0.93);
+			vec3 grey = C_GREY * vec3(1.12, 1.08, 1.02);
 			vec3 red = mix(C_RED_DARK, C_RED, 0.45);
-			col = mix(grey * 0.9, red, moist) * (0.84 + 0.22 * r) * (0.86 + 0.26 * v_veg.w);
+			col = mix(grey, red, moist) * (0.84 + 0.22 * r) * (0.86 + 0.26 * v_veg.w);
 			col = mix(col, C_SNOW, (1.0 - smoothstep(-4.0, 0.0, tnow)) * smoothstep(0.75, 0.95, dot(normalize(v_wn), normalize(v_wpos))) * 0.7);
 			rough = 0.85;
 		}

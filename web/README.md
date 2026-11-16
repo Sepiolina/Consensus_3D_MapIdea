@@ -173,3 +173,68 @@ billboard `ShaderMaterial`, the atlas drawn into an `Image` at startup, plates a
 **Map lenses** ("Map lens" selector): Natural, Elevation, Temperature, Rainfall,
 Biome. `apply_lens()` in `COMMON` tints the land albedo before lighting, on the 3D
 terrain and the globe, so relief shading stays visible.
+
+## Fourth pass: cliffs, vegetation placement, rivers
+
+Numeric checks run in Node without a browser (`THREE_PATH` = a three.js package):
+`web/tools/checks.js [cliffs] [veg] [rivers]`, `web/tools/risers.js` (riser widths and
+vertex rows per level of detail), `web/tools/buildcost.js` (cell build time).
+
+**Cliffs.** There are no mesh UVs: rock colour came from height bands (thin periodic
+strata every 55 m plus a ledge sine) and fluting from noise of the direction, smeared
+over risers that were narrower than the vertex spacing (median 1.2 rows at LOD0, 0.5
+at LOD1). Now:
+- `surface(d, start, q, rw)`: each tableland riser is widened to at least `rw` world
+  units, using the gradient of the edge field (finite differences); `PlanetView`
+  passes `RISER_W = [0.21, 0.5, 1.0]` per level (about 1.9x the vertex spacing), so a
+  wall always carries several vertex rows. The riser profile is planar (constant
+  slope, short rounding at rim and foot) instead of a double smoothstep, so walls read
+  as flat planes with crisp rim and foot lines. Gully V-walls are rounded over the
+  same width and shallower on coarse levels.
+- Plan-view form: `_mesaField()` adds two octaves of `cellBlock()`, a continuous
+  soft-min Voronoi (one value per block, blended only near block borders), so rims
+  break into angular buttresses, alcoves and stepped-back blocks; the blocks fade out
+  on levels too coarse to draw them.
+- Mesh: interior vertices of each fan triangle are jittered sideways by a hash of
+  their direction, so flat-shaded rock shows irregular facets instead of a diamond grid.
+- Shading: rock uses the flat triangle normal on purpose, grass and sand the smooth
+  one; no screen-space bump on rock. Colour is a stratigraphic column: broad layers of
+  irregular thickness (about 120 m, boundary position and tone hashed per layer,
+  gently warped) plus a tone per facet; no thin stripes.
+- Boulders (`G.boulder`, one instanced batch replacing the two rock kinds): a 20-face
+  icosahedron with planar cuts, flat-shaded (facet normals from screen derivatives),
+  per-instance corner jitter and proportions, sunk partly into the ground, in the
+  local rock colour (red sandstone to grey-brown). Placed at cliff feet (largest, up
+  to cliff-chunk size), rims, river banks, mountain flanks and dry gullies.
+- Five AO probes per vertex instead of six (pays for part of the clamp).
+
+**Vegetation** (`_vegPlan`, `_placeVegetation`). Before: random points on the drawn
+triangles of whichever level was loaded (so plants moved between levels), trees only
+rejected by the interpolated vertex normal (up < 0.86) and river distance > 1.35 half
+widths from the centre (inside the sandy bank), LOD1 thinned by 0.14, and density
+from two thresholded noise octaves (repeated similar clumps). Now each cell is planned
+once from `surface()` and cached, seeded by the cell id: per kind a fully jittered grid
+in the cell's tangent plane in random order, a cheap noise pre-pass, then hard
+exclusions and a minimum spacing varying with a slow field. Trees: slope <= 22 deg
+(from the surface normal), 0.15 units clear of cliff walls at rim and foot, the channel
+plus a bank margin of 0.14 + 1.1 half widths, 20 m above the sea, 6 m above the river;
+shrubs and grass looser. Density = biome x groves/clearings (warped noise) x moisture,
+with a riparian band set back from the water and a few lone trees; scale grows toward
+grove centres. LOD1 shows a fixed subset by rank; heights are snapped to the drawn
+grid of each level. `surface()` now also reports `sRivX`/`sRivHW` (distance from the
+channel edge, half width) and `sRisD`/`sRisHW`/`sRisH` (riser distance, half width,
+height); `riverEdgeDist()` is a cheap pre-pass query.
+
+**Rivers.** Water levels are per path point from the natural ground (centre line and
+both bank lines), a running minimum downstream that meets exactly at cell borders and
+confluences, so they never rise and drop in steps where the ground drops (falls).
+Carving: inside a channel its own profile wins over other reaches' valley walls, and
+outside every channel the ground stays 2 m above the water of any channel whose bank it
+is on. Near the camera the water is drawn with the terrain grid's own vertices at the
+river level (`riverGridVert/Frag`, like the sea), shown where the channel mask is set,
+flat-shaded teal with a depth tint and foam where the level drops steeply; the ribbon
+remains only as the far-away stand-in. Banks get a gravel and dirt shelf.
+
+Not done in this pass: one global spline per river (paths are still per-cell
+meandered Béziers), width smoothing along the course and at confluences, and a marked
+waterfall segment type (falls are steep level drops over one path segment, with foam).
