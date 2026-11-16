@@ -498,29 +498,24 @@
 		float rocky = smoothstep(0.24, 0.46, steep + (n_mid - 0.5) * 0.14);
 		rocky = max(rocky, smoothstep(0.16, 0.3, steep) * mesa * 0.9);
 		rocky = max(rocky, smoothstep(1500.0, 2800.0, h) * smoothstep(0.06, 0.16, steep + (n_mid - 0.5) * 0.08));
-		// Layered strata follow height with a slight warp; fade once they get thinner
-		// than a pixel. Vertical streaks come for free: d barely changes up a wall.
-		float band = h / 55.0 + (vnoise(d * 70.0) - 0.5) * 1.2 + (fbm(d * 260.0) - 0.5) * 0.35;
-		float bk = 1.0 - smoothstep(0.08, 0.3, fwidth(band));
-		float s1 = fract(band);
-		float layer = smoothstep(0.0, 0.12, s1) * (1.0 - smoothstep(0.55, 0.7, s1));
-		float s2 = fract(band * 2.3 + 0.37);
-		float thin = smoothstep(0.2, 0.3, s2) * (1.0 - smoothstep(0.75, 0.85, s2));
-		float strata = mix(0.5, layer * 0.75 + thin * 0.25, bk);
-		float tone = hash13(vec3(floor(band), 1.7, 3.1));
-		vec3 red = mix(mix(C_RED_DARK, C_RED, 0.55), mix(C_RED, C_RED_LIGHT, tone * 0.8), strata);
-		vec3 grey = mix(mix(v_color.rgb, C_GREY, 0.45), C_GREY * 1.12, strata * 0.6) * (0.85 + 0.25 * tone);
+		// Rock gets its look from geometry and flat shading, not painted stripes. Colour
+		// is a stratigraphic column: a few BROAD layers of irregular thickness (each
+		// layer i has its own tone and its own boundary position, both hashed from i, so
+		// nothing repeats at a regular interval), gently warped so a whole mesa shares
+		// the same sequence. Plus a little tone per facet.
+		float col_y = h / 120.0 + (vnoise(d * 9.0) - 0.5) * 3.0 + (vnoise(d * 45.0) - 0.5) * 0.25;
+		float li = floor(col_y);
+		float lf = col_y - li;
+		float edge_at = 0.25 + 0.5 * hash13(vec3(li, 4.2, 9.1));
+		float tone = mix(hash13(vec3(li, 1.7, 3.1)), hash13(vec3(li + 1.0, 1.7, 3.1)), smoothstep(edge_at - 0.07, edge_at + 0.07, lf));
+		float facet = skirt ? 0.5 : hash13(floor(fn * 5.0 + 0.5) + vec3(floor(d * 260.0)));
+		vec3 red = mix(mix(C_RED_DARK, C_RED, 0.75), mix(C_RED, C_RED_LIGHT, 0.6), tone) * (0.93 + 0.14 * facet);
+		vec3 grey = mix(mix(v_color.rgb, C_GREY, 0.45), C_GREY * 1.12, tone * 0.6) * (0.88 + 0.2 * facet);
 		vec3 rockc = mix(grey, red, clamp(warm_dry * 0.85 + mesa * 0.35, 0.0, 1.0) * (1.0 - smoothstep(1800.0, 3000.0, h) * 0.7));
 		float crag = max(smoothstep(1700.0, 2500.0, h), 1.0 - smoothstep(-6.0, 1.0, tmean));
 		rockc = mix(rockc, grey * vec3(1.0, 0.95, 0.88), crag);   // cold high crags: grey-brown
-		float streak = fbm_aa(vec3(d * 700.0), px * 700.0 / PLANET_R);
-		// Vertical fluting and cracks: ridged noise of the direction alone, so it runs
-		// straight down a wall; hard/soft layers as ledges (smooth bands for the bump).
-		float flute = pow(ridge(d * 1500.0 + 7.0), 4.0) * aa_keep(1500.0 * 1.5, px);
-		float ledge = (0.5 + 0.5 * sin(band * 6.2832 * 2.0)) * bk;
-		rockc *= (0.84 + 0.28 * streak) * (1.0 - 0.35 * flute) * (0.9 + 0.2 * ledge);
-		rockc *= 1.0 + clamp(-curv * 1.5, 0.0, 1.0) * 0.35;          // sunlit caprock lips
-		rockc *= 1.0 - clamp(curv * 1.5, 0.0, 1.0) * 0.3;            // dark contact at the foot
+		rockc *= 1.0 + clamp(-curv * 1.5, 0.0, 1.0) * 0.2;           // sunlit caprock lips
+		rockc *= 1.0 - clamp(curv * 1.5, 0.0, 1.0) * 0.25;           // dark contact at the foot
 		col = mix(col, rockc, rocky);
 		// Scree and talus at cliff feet (concave, occluded, moderately steep).
 		float scree = (1.0 - smoothstep(0.55, 0.85, v_nrm.w)) * smoothstep(0.03, 0.14, steep) * (1.0 - rocky) * relief;
@@ -538,8 +533,10 @@
 		col *= 1.0 - 0.2 * cloud_cover(d) * relief;
 
 		// Bump the normal with the ground detail (screen-space gradient of a height).
-		float bump = (skirt ? 0.0 : 1.0) * relief * (rocky * streak * 0.35 + (1.0 - rocky) * (groundBump * (1.0 - sandy * 0.7) ));
-		float useF = smoothstep(0.18, 0.42, fslope - sslope) * relief;
+		float bump = (skirt ? 0.0 : 1.0) * relief * (1.0 - rocky) * groundBump * (1.0 - sandy * 0.7); // no bump on rock
+		// Rock is flat-shaded on purpose (facets read as planes); grass, sand and gentle
+		// ground keep the smooth normals.
+		float useF = max(smoothstep(0.18, 0.42, fslope - sslope), rocky) * relief;
 		vec3 n = normalize(mix(sn, fn, useF));
 		vec3 r1 = cross(dpy, n);
 		vec3 r2 = cross(n, dpx);
@@ -618,6 +615,7 @@
 	varying float v_tnow;
 	varying float v_flood;
 	varying float v_side;
+	varying float v_far;
 	void main() {
 		vec3 d = normalize(position);
 		float hemi = clamp(d.y * 6.0, -1.0, 1.0);
@@ -630,7 +628,10 @@
 		vec4 w0 = modelMatrix * vec4(d * PLANET_R, 1.0);
 		float dist = distance(cameraPosition, w0.xyz);
 		float far = smoothstep(16.0, 30.0, dist);
-		float half_w = mix(aflow.y + v_flood * 0.15, ariver.z * (1.0 + v_flood), smoothstep(9.0, 15.0, dist));
+		// The ribbon is the far-away stand-in only: near the camera the terrain-grid
+		// water (riverGrid) takes over, and the ribbon collapses.
+		float half_w = far > 0.0 ? ariver.z * (1.0 + v_flood) : 0.0;
+		v_far = far;
 		v_side = ariver.x * half_w / ariver.z;
 		d = normalize(d * PLANET_R + across * ariver.x * half_w);
 		v_dir = d;
@@ -646,6 +647,7 @@
 	varying float v_tnow;
 	varying float v_flood;
 	varying float v_side;
+	varying float v_far;
 	void main() {
 		if (v_level < sea_level - 2.0) discard;
 		float s = abs(v_side);                  // 0 centre, 1 channel edge, >1 over the banks
@@ -665,7 +667,71 @@
 		vec3 rn = normalize(n + (vec3(vnoise(q * 1.3), vnoise(q * 1.3 + 7.0), vnoise(q * 1.3 + 13.0)) - 0.5) * 0.16);
 		vec3 c = lit(col, rn, v_wpos, mix(0.12, 0.8, ice), 0.8, vec3(0.0), 1.0);
 		float alpha = mix(0.62, 0.94, depthk) * (1.0 - smoothstep(1.4, 2.0, s) * 0.3);
-		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), max(alpha, ice));
+		gl_FragColor = vec4(tonemap(haze(c, distance(cameraPosition, v_wpos), v_wpos)), max(alpha, ice) * v_far);
+	}`;
+
+	// River water on the terrain grid: the terrain's vertices at the water level of the
+	// nearest river (ariver), kept where the channel mask says so. Flat teal with a
+	// depth tint, foam where the level drops steeply (falls and rapids).
+	S.riverGridVert = S.COMMON + `
+	attribute vec4 adata;
+	attribute vec4 asurf;
+	attribute vec4 acolor;
+	attribute float ariver;
+	varying vec3 v_dir;
+	varying vec3 v_wpos;
+	varying vec4 v_data;
+	varying float v_level;
+	varying float v_rivd;
+	varying float v_keep;
+	varying float v_flood;
+	void main() {
+		v_dir = normalize(position);
+		v_data = adata;
+		float hemi = clamp(v_dir.y * 6.0, -1.0, 1.0);
+		v_flood = clamp(flood + 0.2 * max(season * hemi, 0.0), 0.0, 1.5);
+		v_keep = (ariver > -90000.0 && acolor.a > -0.5) ? 1.0 : 0.0;
+		v_level = max(ariver, -200.0) + v_flood * 45.0;
+		v_rivd = asurf.w;
+		vec4 wp = modelMatrix * vec4(v_dir * (PLANET_R + disp(v_level) * detail), 1.0);
+		v_wpos = wp.xyz;
+		gl_Position = projectionMatrix * viewMatrix * wp;
+	}`;
+	S.riverGridFrag = S.COMMON + `
+	varying vec3 v_dir;
+	varying vec3 v_wpos;
+	varying vec4 v_data;
+	varying float v_level;
+	varying float v_rivd;
+	varying float v_keep;
+	varying float v_flood;
+	void main() {
+		float dist = distance(cameraPosition, v_wpos);
+		float near = 1.0 - smoothstep(16.0, 30.0, dist);
+		float depth = v_level - v_data.x;
+		// Channel mask (plus the floodplain when flooding); never over the sea.
+		if (v_keep < 0.999 || near <= 0.0 || depth < -1.0 || v_level < sea_level + 0.5 || v_rivd > 1.3 + v_flood * 2.5) discard;
+		vec3 d = normalize(v_dir);
+		float tnow = temp_now(v_data.y, v_data.z, d);
+		float ice = 1.0 - smoothstep(-6.0, -3.0, tnow);
+		vec3 col = mix(vec3(0.22, 0.46, 0.42), vec3(0.07, 0.29, 0.32), smoothstep(0.0, 28.0, depth));
+		col = mix(col, vec3(0.40, 0.34, 0.22), clamp(v_flood, 0.0, 1.0) * 0.5);
+		// Falls and rapids: white water where the surface drops steeply.
+		float px = max(length(dFdx(v_wpos)), length(dFdy(v_wpos)));
+		float drop = length(vec2(dFdx(v_level), dFdy(v_level))) / max(px, 1e-5);   // metres per world unit
+		float churn = vnoise(d * 2600.0 + vec3(0.0, wall_time * 1.5, 0.0));
+		float foam = smoothstep(260.0, 700.0, drop) * (0.6 + 0.4 * churn);
+		foam = max(foam, (1.0 - smoothstep(0.0, 2.5, depth)) * 0.25);            // thin shore line
+		col = mix(col, vec3(0.93, 0.95, 0.94), clamp(foam, 0.0, 1.0) * (1.0 - ice));
+		col = mix(col, vec3(0.82, 0.90, 0.96), ice);
+		vec3 n = normalize(v_wpos);
+		vec3 view = normalize(cameraPosition - v_wpos);
+		float fres = pow(1.0 - clamp(dot(n, view), 0.0, 1.0), 4.0);
+		col = mix(col, vec3(0.55, 0.65, 0.70), fres * 0.4 * (1.0 - ice));
+		vec3 rn = normalize(n + (vec3(vnoise(d * 900.0 + wall_time * 0.4), vnoise(d * 900.0 + 7.0 - wall_time * 0.3), vnoise(d * 900.0 + 13.0)) - 0.5) * 0.08);
+		vec3 c = lit(col, rn, v_wpos, mix(0.15, 0.8, ice), 0.6, vec3(0.0), 1.0);
+		float alpha = mix(0.72, 0.95, smoothstep(0.0, 18.0, depth));
+		gl_FragColor = vec4(tonemap(haze(c, dist, v_wpos)), max(max(alpha, foam), ice) * near);
 	}`;
 
 	// ---------------------------------------------------------------- cell borders

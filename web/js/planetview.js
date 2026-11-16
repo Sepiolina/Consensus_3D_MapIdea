@@ -16,6 +16,7 @@
 	const R = 100.0;
 	const RELIEF_MAX = 5.0, RELIEF_H0 = 2500.0, SEA_FLOOR = 1.0; // keep in sync with COMMON
 	const LOD_SUB = [40, 16, 8];     // subdivisions of each fan triangle, per level of detail
+	const RISER_W = [0.26, 0.62, 1.2]; // minimum cliff-wall width (world units) per level: the steep part then spans 1.5+ vertex rows
 	const LOD_RAD = [0.11, 0.22];    // angular distance from the focus where LOD 0 and LOD 1 end
 	const LOD_HYST = 0.02;           // extra distance before a cell is coarsened again
 	const VEG_LOD = 1;               // cells at this LOD or finer carry trees and rocks
@@ -27,6 +28,15 @@
 	const tangentBasis = (d) => {
 		const e1 = norm(cross(d, Math.abs(d[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0]));
 		return [e1, cross(d, e1)];
+	};
+
+	// Moves unit vector d sideways by up to `amp` radians, by a hash of d itself.
+	const jitter = (d, amp) => {
+		let h = Math.imul(Math.round(d[0] * 4e6) | 0, 73856093) ^ Math.imul(Math.round(d[1] * 4e6) | 0, 19349663) ^ Math.imul(Math.round(d[2] * 4e6) | 0, 83492791);
+		h = Math.imul(h ^ (h >>> 13), 0x5bd1e995); h ^= h >>> 15;
+		const u = ((h & 1023) / 1023 - 0.5) * 2 * amp, v = (((h >>> 10) & 1023) / 1023 - 0.5) * 2 * amp;
+		const [e1, e2] = tangentBasis(d);
+		return norm([d[0] + e1[0] * u + e2[0] * v, d[1] + e1[1] * u + e2[1] * v, d[2] + e1[2] * u + e2[2] * v]);
 	};
 
 	class PlanetView {
@@ -65,6 +75,7 @@
 			this.terrainDepthMat = mat(S.terrainVert, S.depthFrag, { skirt_drop: { value: 0 } }, { side: THREE.DoubleSide });
 			this.waterMat = mat(S.waterVert, S.waterFrag, null, { side: THREE.DoubleSide, transparent: true, depthWrite: false });
 			this.riverMat = mat(S.riverVert, S.riverFrag, null, { side: THREE.DoubleSide, transparent: true, depthWrite: false });
+			this.riverGridMat = mat(S.riverGridVert, S.riverGridFrag, null, { side: THREE.DoubleSide, transparent: true, depthWrite: false, extensions: { derivatives: true } });
 			this.borderMat = mat(S.borderVert, S.borderFrag, { lift: { value: 0.04 } }, { side: THREE.DoubleSide });
 			this.selectMat = mat(S.borderVert, S.borderFrag, { lift: { value: 0.09 }, border_strength: { value: 1 } }, { side: THREE.DoubleSide });
 			this.cloudMat = mat(S.cloudVert, S.cloudFrag, { cloud_alpha: { value: 1 } }, { transparent: true, depthWrite: false });
@@ -82,6 +93,8 @@
 		}
 
 		static disp(h) { return disp(h); }
+		static get LOD_SUB() { return LOD_SUB; }
+		static get RISER_W() { return RISER_W; }
 
 		// Rendered surface radius (land or sea surface) under planet-space direction dir.
 		groundRadius(dir) {
@@ -195,9 +208,9 @@
 		// ------------------------------------------------------------ cell meshes
 		// One surface sample with its normal (finite differences of the displaced
 		// surface), ambient occlusion and concavity (horizon probes around it).
-		_vertex(d, start, eps, out, o) {
+		_vertex(d, start, eps, out, o, rw) {
 			const w = this.world;
-			const c = w.surface(d, start, 1);
+			const c = w.surface(d, start, 1, rw);
 			const h = w.sH;
 			out.data[o * 4] = h; out.data[o * 4 + 1] = w.sT; out.data[o * 4 + 2] = w.sA; out.data[o * 4 + 3] = w.sP;
 			out.surf[o * 4] = w.sMesa; out.surf[o * 4 + 1] = w.sGully; out.surf[o * 4 + 3] = Math.min(w.sRivD, 99);
@@ -206,27 +219,30 @@
 			const [e1, e2] = tangentBasis(d);
 			const r0 = R + disp(h);
 			const d1 = norm([d[0] + e1[0] * eps, d[1] + e1[1] * eps, d[2] + e1[2] * eps]);
-			w.surface(d1, c, 1); const r1 = R + disp(w.sH);
+			w.gHold = w.sG; // the riser-width gradient barely changes over eps: reuse it
+			w.surface(d1, c, 1, rw); const r1 = R + disp(w.sH);
 			const d2 = norm([d[0] + e2[0] * eps, d[1] + e2[1] * eps, d[2] + e2[2] * eps]);
-			w.surface(d2, c, 1); const r2 = R + disp(w.sH);
+			w.surface(d2, c, 1, rw); const r2 = R + disp(w.sH);
+			w.gHold = 0;
 			const ax = d1[0] * r1 - d[0] * r0, ay = d1[1] * r1 - d[1] * r0, az = d1[2] * r1 - d[2] * r0;
 			const bx = d2[0] * r2 - d[0] * r0, by = d2[1] * r2 - d[1] * r0, bz = d2[2] * r2 - d[2] * r0;
 			let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
 			let nl = Math.hypot(nx, ny, nz) || 1;
 			if (nx * d[0] + ny * d[1] + nz * d[2] < 0) nl = -nl;
 			out.nrm[o * 4] = nx / nl; out.nrm[o * 4 + 1] = ny / nl; out.nrm[o * 4 + 2] = nz / nl;
-			// Six horizon probes on two rings: how much of the sky the ground around hides.
+			// Five horizon probes on two rings: how much of the sky the ground around hides.
+			// (Five, not six, to pay for the riser-width clamp in surface().)
 			let occ = 0, curv = 0;
 			const dh = disp(h);
-			for (let k = 0; k < 6; k++) {
-				const a = k * 1.0472 + 0.35, rr = AO_R[k & 1], ca = Math.cos(a) * rr, sa = Math.sin(a) * rr;
+			for (let k = 0; k < 5; k++) {
+				const a = k * 1.2566 + 0.35, rr = AO_R[k < 3 ? 0 : 1], ca = Math.cos(k < 3 ? a * 1.6667 : a) * rr, sa = Math.sin(k < 3 ? a * 1.6667 : a) * rr;
 				const dk = norm([d[0] + e1[0] * ca + e2[0] * sa, d[1] + e1[1] * ca + e2[1] * sa, d[2] + e1[2] * ca + e2[2] * sa]);
 				w.surface(dk, c, 2);
 				const rise = disp(w.sH) - dh, e = rise / (rr * R);
 				if (e > 0) occ += e / Math.sqrt(1 + e * e);
-				if (!(k & 1)) curv += rise;
+				if (k < 3) curv += rise;
 			}
-			out.nrm[o * 4 + 3] = clamp(1 - occ / 6 * 1.1, 0.2, 1);
+			out.nrm[o * 4 + 3] = clamp(1 - occ / 5 * 1.1, 0.2, 1);
 			out.surf[o * 4 + 2] = clamp(curv / 3 / (AO_R[0] * R), -1, 1); // + concave, - convex
 			return c;
 		}
@@ -236,6 +252,7 @@
 		*_buildCell(c, lod) {
 			const THREE = window.THREE, w = this.world, SUB = LOD_SUB[lod];
 			const corners = w.cellCorner[c], nb = w.cellNb[c], m = corners.length, pc = w.sites[c];
+
 			const rowLen = ((SUB + 1) * (SUB + 2)) / 2, nGrid = m * rowLen, nv = nGrid + m * (SUB + 1);
 			const out = { pos: new Float32Array(nv * 3), data: new Float32Array(nv * 4), nrm: new Float32Array(nv * 4), surf: new Float32Array(nv * 4), col: new Float32Array(nv * 4), riv: new Float32Array(nv) };
 			const idx = [];
@@ -247,13 +264,21 @@
 			for (let i = 0; i < m; i++) {
 				const ia = corners[i], ib = corners[(i + 1) % m], pa = w.cornerPos[ia], pb = w.cornerPos[ib];
 				const base = v;
+				// Jitter amplitude for this fan triangle: a fifth of its smaller grid spacing.
+				const ac = (u, q) => Math.acos(clamp(dot(u, q), -1, 1));
+				const jit = (0.2 * Math.min(ac(pa, pb), ac(pc, pa), ac(pc, pb))) / SUB;
 				// Triangle (site, corner a, corner b) as a grid: row r runs parallel to the cell edge.
 				for (let r = 0; r <= SUB; r++) {
 					for (let s = 0; s <= r; s++) {
 						const wb = s / SUB, wa = (r - s) / SUB, wc = 1 - r / SUB;
-						const d = norm([pc[0] * wc + pa[0] * wa + pb[0] * wb, pc[1] * wc + pa[1] * wa + pb[1] * wb, pc[2] * wc + pa[2] * wa + pb[2] * wb]);
+						let d = norm([pc[0] * wc + pa[0] * wa + pb[0] * wb, pc[1] * wc + pa[1] * wa + pb[1] * wb, pc[2] * wc + pa[2] * wa + pb[2] * wb]);
+						// Interior vertices are jittered sideways (by a hash of their own
+						// direction): flat-shaded rock then breaks into irregular facets
+						// instead of a regular diamond pattern. Vertices on the sides of the
+						// fan triangle (shared with the next one) and the cell edge stay put.
+						if (s > 0 && s < r && r < SUB) d = jitter(d, jit);
 						out.pos[v * 3] = d[0] * R; out.pos[v * 3 + 1] = d[1] * R; out.pos[v * 3 + 2] = d[2] * R;
-						start = this._vertex(d, start, eps, out, v);
+						start = this._vertex(d, start, eps, out, v, RISER_W[lod]);
 						if (out.data[v * 4] < minH) minH = out.data[v * 4];
 						v++;
 					}
@@ -299,6 +324,12 @@
 			terrain.layers.enable(1); // shadow caster
 			// The sea surface reuses the terrain vertices; the shader puts it at sea level.
 			if (minH < 400) add(new THREE.Mesh(geo, this.waterMat), 1);
+			// River water near the camera is drawn with the terrain's own vertices at the
+			// river's water level (like the sea), so the shoreline is the exact
+			// intersection with the carved bed. The ribbon (_addRivers) only shows far away.
+			let nearRiver = false;
+			for (let i = 0; i < nGrid && !nearRiver; i++) nearRiver = out.surf[i * 4 + 3] < 2.5;
+			if (nearRiver) add(new THREE.Mesh(geo, this.riverGridMat), 1);
 
 			// Border ribbons along each edge, coloured by tectonic plate, plus corner dots.
 			const bPos = [], bH = [], bCol = [], bIdx = [];

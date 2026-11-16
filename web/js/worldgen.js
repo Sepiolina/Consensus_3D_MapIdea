@@ -94,6 +94,42 @@
 		const s = smoothstep(0.5 - ramp, 0.5 + ramp, f);
 		return (k + tilt * f + (1 - tilt) * s * s * (3 - 2 * s)) * step;
 	}
+	// Cellular blocks: a constant 0..1 per cell of a jittered point lattice (Voronoi of
+	// one feature point per lattice cell, 27-cell search), so plan-view outlines get
+	// straight edges and corners. Soft-min weighting makes it continuous: the value
+	// blends between neighbouring cells within about `b` (lattice units) of their
+	// border, so the surface never tears; the riser-width clamp in surface() turns
+	// the short, steep transition into a proper wall.
+	function cellBlock(x, y, z, b) {
+		const bx = Math.floor(x), by = Math.floor(y), bz = Math.floor(z), t = 1 / Math.max(b * 0.8, 1e-3);
+		const D = cellBlock.D, V = cellBlock.V, ux = x - bx, uy = y - by, uz = z - bz;
+		// Own cell first: its point bounds the nearest distance, so lattice cells whose
+		// box is farther than that plus the blend cutoff cannot matter and are skipped.
+		const own = (ux - 0.5) * (ux - 0.5) + (uy - 0.5) * (uy - 0.5) + (uz - 0.5) * (uz - 0.5);
+		const lim = (Math.sqrt(own) + 0.57) ** 2 + 6 / t; // own point is within 0.4*sqrt(3) of the centre
+		const gap = (u, i) => (i < 0 ? u + 0.1 : i > 0 ? 1.1 - u : 0);
+		let d1 = 1e9, cnt = 0;
+		for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) {
+			const gx = gap(ux, i), gy = gap(uy, j), gz = gap(uz, k);
+			if (gx * gx + gy * gy + gz * gz > lim) continue;
+			const n = cnt++;
+			const ix = bx + i, iy = by + j, iz = bz + k;
+			let hsh = Math.imul(ix, 73856093) ^ Math.imul(iy, 19349663) ^ Math.imul(iz, 83492791);
+			hsh = Math.imul(hsh ^ (hsh >>> 15), 0x2c1b3c6d); hsh ^= hsh >>> 12; hsh = Math.imul(hsh, 0x297a2d39); hsh ^= hsh >>> 15;
+			const fx = ix + 0.1 + 0.8 * (hsh & 255) / 255, fy = iy + 0.1 + 0.8 * ((hsh >>> 8) & 255) / 255, fz = iz + 0.1 + 0.8 * ((hsh >>> 16) & 255) / 255;
+			const dd = (x - fx) * (x - fx) + (y - fy) * (y - fy) + (z - fz) * (z - fz);
+			D[n] = dd; V[n] = ((hsh >>> 24) & 255) / 255;
+			if (dd < d1) d1 = dd;
+		}
+		let sw = 0, sv = 0;
+		for (let n = 0; n < cnt; n++) { const e = D[n] - d1; if (e * t < 6) { const wgt = Math.exp(-e * t); sw += wgt; sv += wgt * V[n]; } }
+		return sv / sw;
+	}
+	cellBlock.D = new Float64Array(27); cellBlock.V = new Float64Array(27);
+	// Minimum riser (cliff wall) width in world units for the finest mesh; coarser
+	// levels of detail pass their own (see PlanetView RISER_W), so every wall gets
+	// several rows of vertices at every level instead of one long triangle.
+	const RISER_W0 = 0.26;
 	// River channel width in world units from discharge (m3/s).
 	const riverWidth = (q) => clamp(0.1 * Math.pow(Math.max(q, 1) / 1000, 0.35), 0.14, 0.7);
 
@@ -432,13 +468,8 @@
 			// always meets open water instead of ending in a pit if the coast lies beyond
 			// the cell border.
 			const mOut = this.elev[dn] <= 0 ? norm(lerp3(pc, this.sites[dn], 0.85)) : norm(add(pc, this.sites[dn])), w1 = riverWidth(this.flux[c]), ups = this.riverUp[c];
-			const bed = this.riverBed, bc = bed ? bed[c] : 0;
-			const bOut = bed ? (this.hasRiver[dn] ? (bc + bed[dn]) * 0.5 : Math.min(bc, 0)) : 0;
-			const beds = (n, b0, bm, b1, headwater) => {
-				const a = [];
-				for (let k = 0; k <= n; k++) { const t = k / n; a.push(headwater ? b0 + (b1 - b0) * t : t < 0.5 ? b0 + (bm - b0) * t * 2 : bm + (b1 - bm) * (t * 2 - 1)); }
-				return a;
-			};
+			const lv = this.riverLvl ? this.riverLvl[c] : null;
+			const zeros = (n) => new Array(n + 1).fill(0);
 			// Width along the path: the discharge trend times a smooth noise of position
 			// (pools and narrows); it matches at cell borders because it depends on the point.
 			const widths = (path) => {
@@ -447,8 +478,8 @@
 				return path;
 			};
 			const o0 = out.length;
-			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 12), w0: w1 * 0.5, w1, bed: beds(12, bc, bc, bOut, true) }); }
-			else for (const j of ups) out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 24), w0: riverWidth(this.flux[j]), w1, bed: beds(24, bed ? (bed[j] + bc) * 0.5 : 0, bc, bOut, false) });
+			if (!ups.length) { const a = norm(lerp3(pc, mOut, 0.25)); out.push({ pts: this._bezier(a, norm(lerp3(a, mOut, 0.5)), mOut, 12), w0: w1 * 0.5, w1, bed: lv ? lv[0] : zeros(12) }); }
+			else ups.forEach((j, i) => out.push({ pts: this._bezier(norm(add(this.sites[j], pc)), pc, mOut, 24), w0: riverWidth(this.flux[j]), w1, bed: lv ? lv[i] : zeros(24) }));
 			for (let i = o0; i < out.length; i++) widths(out[i]);
 			return out;
 		}
@@ -527,23 +558,41 @@
 				m *= 1 - smoothstep(1400, 2800, h);                         // not in the high ranges
 				this.mesaP[c] = h > 0 ? m : 0;
 			}
-			// River beds: water level at each river site, never rising downstream.
-			this.riverBed = null;
-			const bed = new Float32Array(n), order = [];
+			// River water levels, per path point. The level follows the natural ground
+			// (sampled without rivers on the centre line and at both bank lines) from just
+			// below it, and never rises downstream: a running minimum, so the river sits in
+			// its bed everywhere, cuts a gorge through anything higher, and drops in steps
+			// (pools and falls) where the ground drops. Pieces meet exactly at cell borders;
+			// at a confluence every branch comes down to the lowest one.
+			this.riverLvl = null;
+			const lvl = new Array(n).fill(null), outLvl = new Float32Array(n), order = [];
 			for (let c = 0; c < n; c++) if (this.hasRiver[c]) order.push(c);
 			order.sort((a, b) => this.fillLevel[b] - this.fillLevel[a]);
 			this._noRiver = true;
+			const ground = (d, c) => { this.surface(d, c, 1); return this.sH; };
 			for (const c of order) {
-				this.surface(sites[c], c, 1);
-				let b = this.sH - 14;
-				for (const j of this.riverUp[c]) b = Math.min(b, bed[j]);
-				// Inland water stays above the sea: only the mouth itself reaches 0 m, so no
-				// channel inland dips under sea level (which showed as sea "ponds").
-				b = Math.max(b, 4);
-				bed[c] = b;
+				const paths = this.riverPaths(c), ups = this.riverUp[c], toSea = this.elev[this.downhill[c]] <= 0;
+				const all = paths.map((path, i) => {
+					const pts = path.pts, m = pts.length, L = new Array(m);
+					let run = ups.length ? outLvl[ups[i]] : 1e9;
+					for (let k = 0; k < m; k++) {
+						const d = pts[k], a = pts[Math.min(k + 1, m - 1)], b = pts[Math.max(k - 1, 0)];
+						const ac = norm(cross(d, norm(sub(a, b)))), r = (path.w[k] * 0.5 * 1.6 + 0.18) / 100;
+						let g = ground(d, c);
+						g = Math.min(g, ground(norm([d[0] + ac[0] * r, d[1] + ac[1] * r, d[2] + ac[2] * r]), c), ground(norm([d[0] - ac[0] * r, d[1] - ac[1] * r, d[2] - ac[2] * r]), c));
+						// The first point is the upstream piece's last point: keep its level exactly.
+						if (k > 0 || !ups.length) run = Math.max(Math.min(run, g - 8), toSea && k === m - 1 ? 0 : toSea ? 0.5 : 4);
+						L[k] = run;
+					}
+					return L;
+				});
+				let end = 1e9;
+				for (const L of all) end = Math.min(end, L[L.length - 1]);
+				for (const L of all) { const m = L.length, top = L[Math.max(m - 7, 0)]; for (let k = Math.max(m - 6, 0); k < m; k++) L[k] = Math.min(L[k], end + (top - end) * ((m - 1 - k) / 6)); }
+				lvl[c] = all; outLvl[c] = end;
 			}
 			this._noRiver = false;
-			this.riverBed = bed;
+			this.riverLvl = lvl;
 			// Channel segments per river cell: a, b, water level at a and b, width at a and b.
 			this.riverSeg = new Array(n).fill(null);
 			for (const c of order) {
@@ -592,7 +641,35 @@
 		// broad swells and rolling hills (amplitude from `rug`) -> ridged noise in
 		// mountain belts -> soft terraces (mesas, buttes, benches) under a noise mask ->
 		// ridged gullies -> river channels with sandy banks and valley walls.
-		surface(d, start, q) {
+		// Tableland edge field at (x, y, z) (not necessarily unit length; wx..wz the domain
+		// warp there, recomputed when null). Benches are cut at multiples of a step of it.
+		// Chunky plan-view form: two octaves of cellular blocks push the field in or out by
+		// a constant per block, so rims break into angular buttresses, alcoves and
+		// stepped-back blocks instead of smooth wavy bands.
+		// rw (minimum riser width, world units) also sets how sharp the block edges are,
+		// so coarse levels of detail get softer blocks they can represent.
+		_mesaField(x, y, z, wx, wy, wz, q, rw) {
+			const n3 = this.sn;
+			if (wx === null) {
+				wx = n3(x * 6.1 + 1.7, y * 6.1 + 9.2, z * 6.1 + 3.1) + 0.45 * n3(x * 15.3 + 7.7, y * 15.3 + 2.2, z * 15.3 + 5.5);
+				wy = n3(x * 6.1 + 11.3, y * 6.1 + 4.4, z * 6.1 + 8.8) + 0.45 * n3(x * 15.3 + 1.1, y * 15.3 + 9.9, z * 15.3 + 3.3);
+				wz = n3(x * 6.1 + 5.9, y * 6.1 + 13.7, z * 6.1 + 0.6) + 0.45 * n3(x * 15.3 + 6.6, y * 15.3 + 4.8, z * 15.3 + 12.1);
+			}
+			let sw = 0.6 * n3(x * 10 + wx * 1.5 + 4.4, y * 10 + wy * 1.5 + 0.7, z * 10 + wz * 1.5 + 2.9) + 0.3 * n3(x * 26 + 8.6, y * 26 + 5.2, z * 26 + 1.8);
+			sw += 0.13 * n3(x * 64 + 2.1, y * 64 + 9.3, z * 64 + 6.2);
+			let field = (sw + 0.12) * 520;
+			if (q === 1) {
+				// Block-edge blend in radians; the blocks fade out where the level of detail
+				// is too coarse to draw them as walls (rw = its minimum riser width).
+				const r = rw || RISER_W0, b = r * 0.012;
+				field += (cellBlock(x * 150, y * 150, z * 150, Math.min(b * 150, 0.3)) - 0.5) * 110 * (1 - smoothstep(0.45, 1.1, r));
+				if (r < 0.5 && q === 1) field += (cellBlock(x * 330 + 7.1, y * 330 + 3.3, z * 330 + 5.9, Math.min(b * 330, 0.3)) - 0.5) * 40 * (1 - smoothstep(0.26, 0.5, r));
+			}
+			return field;
+		}
+
+		// rw: minimum riser width in world units (default: finest level of detail).
+		surface(d, start, q, rw) {
 			const n3 = this.sn, sites = this.sites, x = d[0], y = d[1], z = d[2];
 			const c = this.locate(d, start);
 			this.sWc = q === 0 ? this._edgeWeight(c, d) : 1;
@@ -644,25 +721,50 @@
 			// buttes, benches) with steep risers; step height, riser width and outline
 			// all vary with noise. Gullies bite into the risers (ravines, notched rims).
 			let rim = 0;
+			this.sRim = 0; this.sG = 0; this.sRisD = 99; this.sRisHW = 0; this.sRisH = 0;
 			if (mesa > 0.003) {
-				let sw = 0.6 * n3(x * 10 + wx * 1.5 + 4.4, y * 10 + wy * 1.5 + 0.7, z * 10 + wz * 1.5 + 2.9) + 0.3 * n3(x * 26 + 8.6, y * 26 + 5.2, z * 26 + 1.8);
-				sw += 0.13 * n3(x * 64 + 2.1, y * 64 + 9.3, z * 64 + 6.2);
-				if (q !== 0) sw += 0.05 * n3(x * 150 + 2.5, y * 150 + 6.3, z * 150 + 9.1);
-				const field = (sw + 0.12) * 520;
-				if (field > 0) {
+				const field = this._mesaField(x, y, z, wx, wy, wz, q, rw);
+				if (field > -40) {
 					const step = 170 + 90 * (n3(x * 4.3 + 8.1, y * 4.3 + 1.4, z * 4.3 + 6.6) + 1);
-					const ramp = 0.07 + 0.04 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
-					h += levelHeight(field, step, ramp, 0.07) * mesa;
-					const f = field / step - Math.floor(field / step);
+					let ramp = 0.07 + 0.04 * (n3(x * 7 + 1, y * 7 + 2, z * 7 + 3) + 1);
+					// Riser width clamp: the wall spans 2 * ramp * step of field, i.e.
+					// 2 * ramp * step / |grad field| world units. Widen it to at least the
+					// requested width (finite differences of the field, q != 2 only: the AO
+					// probes do not need it).
+					let G = 0;
+					if (q === 1 && this.gHold > 0) G = this.gHold; // normal samples next to a vertex reuse its gradient
+					else if (q === 1) {
+						const e = 0.0006, ax = Math.abs(y) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+						const e1 = norm(cross(d, ax)), e2 = cross(d, e1);
+						const fa = this._mesaField(x + e1[0] * e, y + e1[1] * e, z + e1[2] * e, null, null, null, q, rw);
+						const fb = this._mesaField(x + e2[0] * e, y + e2[1] * e, z + e2[2] * e, null, null, null, q, rw);
+						G = Math.hypot(fa - field, fb - field) / (e * 100); // field units per world unit
+					}
+					this.sG = G;
+					if (G > 0) ramp = Math.min(Math.max(ramp, (0.5 * (rw || RISER_W0) * G) / step), 0.36);
+					const fl = Math.max(field, 0);
+					h += levelHeight(fl, step, ramp, 0.07) * mesa;
+					const f = fl / step - Math.floor(fl / step);
 					rim = smoothstep(0.15, 0.45, f) * (1 - smoothstep(0.5, 0.85, f)) * mesa;
+					if (G > 0) {
+						// Signed distance (world units) from the middle of the nearest riser:
+						// negative at its foot side, positive toward the rim; its half width;
+						// and the wall height. Vegetation and boulders read these.
+						this.sRisD = ((f - 0.5) * step) / G; this.sRisHW = (ramp * step) / G; this.sRisH = step * mesa;
+						this.sRim = (1 - smoothstep(this.sRisHW + 0.1, this.sRisHW + 0.2, Math.abs(this.sRisD))) * smoothstep(0.2, 0.5, mesa);
+					}
 				}
 			}
 			// 5. Gullies and dry washes: valleys along the zero set of noise, strongest at
 			// tableland rims.
-			const gA = (12 + 0.1 * rg) * land + 150 * rim;
-			const g1 = 1 - Math.abs(n3(x * 70 + wx * 0.8 + 5.5, y * 70 + wy * 0.8 + 1.2, z * 70 + wz * 0.8 + 7.7));
-			let gully = g1 * g1 * g1 * g1;
-			if (q !== 0) { const g2 = 1 - Math.abs(n3(x * 150 + 2.2, y * 150 + 8.3, z * 150 + 4.4)); gully += 0.5 * g2 * g2 * g2 * g2; }
+			const gA = ((12 + 0.1 * rg) * land + 95 * rim) * clamp(0.3 / (rw || RISER_W0), 0.3, 1); // shallower where the mesh is coarse
+			// The V of each gully is rounded over about the minimum riser width (|n| is
+			// replaced by a soft absolute value), so gully walls are never thinner than
+			// the mesh can draw.
+			const gk = (rw || RISER_W0) * 0.55, gn1 = n3(x * 70 + wx * 0.8 + 5.5, y * 70 + wy * 0.8 + 1.2, z * 70 + wz * 0.8 + 7.7);
+			const g1 = 1 - Math.sqrt(gn1 * gn1 + gk * gk * 0.49) + gk * 0.7;
+			let gully = g1 * g1 * g1;
+			if (q !== 0) { const gn2 = n3(x * 150 + 2.2, y * 150 + 8.3, z * 150 + 4.4), g2 = 1 - Math.sqrt(gn2 * gn2 + gk * gk * 2.25) + gk * 1.5; gully += 0.5 * g2 * g2 * g2; }
 			gully = Math.min(gully, 1);
 			h -= gA * gully;
 			// Land cells keep their lowlands above the sea: a soft floor just above 0 m, so
